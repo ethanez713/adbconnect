@@ -1,0 +1,21 @@
+*.iml
+.gradle/
+.kotlin/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.keystore
+*.jks
+
+# Security baseline: never commit secrets, even the app's own paired-device token.
+.env*
+.secrets/
+.secrets
+*secret*.json
+token.json
+*.token

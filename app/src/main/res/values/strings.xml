@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ADB Connection Service</string>
+    <string name="notification_channel_name">ADB Connection Service</string>
+</resources>

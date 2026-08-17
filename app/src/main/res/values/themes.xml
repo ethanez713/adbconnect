@@ -1,0 +1,9 @@
+<resources>
+    <!-- Compose draws everything; this only needs to give the window a chrome-free base in the
+         right brightness. values-night carries the dark variant. -->
+    <style name="Theme.Adbconnect" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+</resources>

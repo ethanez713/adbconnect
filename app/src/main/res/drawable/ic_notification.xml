@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar icon: same ball-in-socket geometry as the launcher mark, scaled to 24dp. Android
+     renders notification icons as a flat alpha silhouette, so colour here is irrelevant; only
+     the opaque shape matters. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M14,8 A5,5 0 1 0 14,18"
+        android:strokeColor="#FFFFFF" android:strokeWidth="2.2"
+        android:strokeLineCap="round" />
+    <path android:pathData="M9.5,10.5 a2.5,2.5 0 1 0 5,0 a2.5,2.5 0 1 0 -5,0"
+        android:fillColor="#FFFFFF" />
+    <path android:pathData="M17.5,9.5 A3.2,3.2 0 0 1 17.5,14.5"
+        android:strokeColor="#FFFFFF" android:strokeWidth="1.4"
+        android:strokeLineCap="round" />
+</vector>
