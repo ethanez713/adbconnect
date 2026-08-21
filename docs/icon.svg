@@ -1,15 +1,15 @@
 <!-- Bugdroid glyph is Material Symbols `adb` (github.com/google/material-design-icons),
      Apache-2.0, re-pathed from its 0 -960 960 960 viewBox into this 108 canvas.
-     Mark is sized to the 66dp adaptive-icon safe circle: nothing outside r=34.5 of centre. -->
+     Mark is sized to the 66dp adaptive-icon safe circle: nothing outside r=22.6 of centre. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
-    <rect width="108" height="108" fill="#12283F" />
-    <g fill="none" stroke="#8AB4F8" stroke-linecap="round">
-        <path d="M73.92,37.29 A26,26 0 0 1 73.92,70.71" stroke-width="4.5" />
-        <path d="M34.08,37.29 A26,26 0 0 0 34.08,70.71" stroke-width="4.5" />
-        <path d="M78.9,33.1 A32.5,32.5 0 0 1 78.9,74.9" stroke-width="4" stroke-opacity="0.5" />
-        <path d="M29.1,33.1 A32.5,32.5 0 0 0 29.1,74.9" stroke-width="4" stroke-opacity="0.5" />
+    <rect width="108" height="108" fill="#F5F1EA" />
+    <g fill="none" stroke="#281C14" stroke-linecap="round">
+        <path d="M63.2349,42.1798 A15,15 0 0 1 63.2349,65.8202" stroke-width="3" />
+        <path d="M44.7651,42.1798 A15,15 0 0 0 44.7651,65.8202" stroke-width="3" />
+        <path d="M65.1283,36.191 A21,21 0 0 1 65.1283,71.809" stroke-width="2.6" stroke-opacity="0.5" />
+        <path d="M42.8717,36.191 A21,21 0 0 0 42.8717,71.809" stroke-width="2.6" stroke-opacity="0.5" />
     </g>
-    <g transform="translate(27.21,80.23) scale(0.055814)">
-        <path fill="#8AB4F8" d="M200-520v-40q0-72 32.5-131.5T320-789l-75-75 35-36 85 85q26-12 55.5-18.5T480-840q30 0 59.5 6.5T595-815l85-85 35 36-75 75q55 38 87.5 97.5T760-560v40H200Zm400-80q17 0 28.5-11.5T640-640q0-17-11.5-28.5T600-680q-17 0-28.5 11.5T560-640q0 17 11.5 28.5T600-600Zm-240 0q17 0 28.5-11.5T400-640q0-17-11.5-28.5T360-680q-17 0-28.5 11.5T320-640q0 17 11.5 28.5T360-600ZM480-40q-117 0-198.5-81.5T200-320v-160h560v160q0 117-81.5 198.5T480-40Z" />
+    <g transform="translate(40.6047,67.1163) scale(0.027907)">
+        <path fill="#281C14" d="M200-520v-40q0-72 32.5-131.5T320-789l-75-75 35-36 85 85q26-12 55.5-18.5T480-840q30 0 59.5 6.5T595-815l85-85 35 36-75 75q55 38 87.5 97.5T760-560v40H200Zm400-80q17 0 28.5-11.5T640-640q0-17-11.5-28.5T600-680q-17 0-28.5 11.5T560-640q0 17 11.5 28.5T600-600Zm-240 0q17 0 28.5-11.5T400-640q0-17-11.5-28.5T360-680q-17 0-28.5 11.5T320-640q0 17 11.5 28.5T360-600ZM480-40q-117 0-198.5-81.5T200-320v-160h560v160q0 117-81.5 198.5T480-40Z" />
     </g>
 </svg>

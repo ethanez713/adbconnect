@@ -3,5 +3,5 @@
          system window shows through as a mismatched band before/around the content. -->
     <color name="window_background">#FAFAFB</color>
 
-    <color name="ic_launcher_background">#12283F</color>
+    <color name="ic_launcher_background">#F5F1EA</color>
 </resources>
