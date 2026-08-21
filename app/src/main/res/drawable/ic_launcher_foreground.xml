@@ -1,15 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bugdroid glyph is Material Symbols `adb` (Apache-2.0); the group transform maps its native
+     0 -960 960 960 coordinate space into this 108 canvas, which is why the scale is so small. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:pathData="M62,35 A25,25 0 1 0 62,73"
-        android:strokeColor="#8AB4F8" android:strokeWidth="10"
+    <path android:pathData="M73.92,37.29 A26,26 0 0 1 73.92,70.71"
+        android:strokeColor="#8AB4F8" android:strokeWidth="4.5"
         android:strokeLineCap="round" />
-    <path android:pathData="M43,54 a11,11 0 1 0 22,0 a11,11 0 1 0 -22,0"
-        android:fillColor="#FFFFFF" />
-    <path android:pathData="M78,42 A16,16 0 0 1 78,66"
-        android:strokeColor="#8AB4F8" android:strokeWidth="5"
+    <path android:pathData="M34.08,37.29 A26,26 0 0 0 34.08,70.71"
+        android:strokeColor="#8AB4F8" android:strokeWidth="4.5"
         android:strokeLineCap="round" />
-    <path android:pathData="M86,34 A25,25 0 0 1 86,74"
-        android:strokeColor="#8AB4F8" android:strokeWidth="5"
-        android:strokeLineCap="round" android:strokeAlpha="0.55" />
+    <path android:pathData="M78.9,33.1 A32.5,32.5 0 0 1 78.9,74.9"
+        android:strokeColor="#8AB4F8" android:strokeWidth="4"
+        android:strokeLineCap="round" android:strokeAlpha="0.5" />
+    <path android:pathData="M29.1,33.1 A32.5,32.5 0 0 0 29.1,74.9"
+        android:strokeColor="#8AB4F8" android:strokeWidth="4"
+        android:strokeLineCap="round" android:strokeAlpha="0.5" />
+    <group
+        android:translateX="27.21" android:translateY="80.23"
+        android:scaleX="0.055814" android:scaleY="0.055814">
+        <path android:fillColor="#8AB4F8"
+            android:pathData="M200,-520v-40q0,-72 32.5,-131.5T320,-789l-75,-75 35,-36 85,85q26,-12 55.5,-18.5T480,-840q30,0 59.5,6.5T595,-815l85,-85 35,36 -75,75q55,38 87.5,97.5T760,-560v40H200Zm400,-80q17,0 28.5,-11.5T640,-640q0,-17 -11.5,-28.5T600,-680q-17,0 -28.5,11.5T560,-640q0,17 11.5,28.5T600,-600Zm-240,0q17,0 28.5,-11.5T400,-640q0,-17 -11.5,-28.5T360,-680q-17,0 -28.5,11.5T320,-640q0,17 11.5,28.5T360,-600ZM480,-40q-117,0 -198.5,-81.5T200,-320v-160h560v160q0,117 -81.5,198.5T480,-40Z" />
+    </group>
 </vector>
