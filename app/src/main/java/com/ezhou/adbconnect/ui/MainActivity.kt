@@ -36,6 +36,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.ezhou.adbconnect.EventCount
 import com.ezhou.adbconnect.MetricEvent
 import com.ezhou.adbconnect.Metrics
@@ -100,20 +103,26 @@ private fun AdbConnectScreen() {
     var state by remember { mutableStateOf(UiState(token = TokenStore.getOrCreate(context))) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            val (serviceRunning, metricsSnapshot) = withContext(Dispatchers.IO) {
-                isServiceListening() to Metrics.snapshot(context)
+    // Scoped to STARTED, not to the composition: the foreground service keeps this process alive
+    // forever, so a plain LaunchedEffect leaves the Activity composed after onStop and the poll
+    // runs 28800 times a day against a screen nobody is looking at.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val (serviceRunning, metricsSnapshot) = withContext(Dispatchers.IO) {
+                    isServiceListening() to Metrics.snapshot(context)
+                }
+                val status = AdbControlService.currentStatus(context, resolvePort = false)
+                state = state.copy(
+                    serviceRunning = serviceRunning,
+                    permissionGranted = status.optBoolean("permissionGranted"),
+                    debuggingEnabled = status.optBoolean("debuggingEnabled"),
+                    port = if (status.isNull("port")) null else status.optInt("port"),
+                    metrics = metricsSnapshot,
+                )
+                delay(3000)
             }
-            val status = AdbControlService.currentStatus(context, resolvePort = false)
-            state = state.copy(
-                serviceRunning = serviceRunning,
-                permissionGranted = status.optBoolean("permissionGranted"),
-                debuggingEnabled = status.optBoolean("debuggingEnabled"),
-                port = if (status.isNull("port")) null else status.optInt("port"),
-                metrics = metricsSnapshot,
-            )
-            delay(3000)
         }
     }
 
