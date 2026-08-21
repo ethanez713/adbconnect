@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -31,13 +32,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.ezhou.adbconnect.EventCount
+import com.ezhou.adbconnect.MetricEvent
+import com.ezhou.adbconnect.Metrics
+import com.ezhou.adbconnect.MetricsSnapshot
 import com.ezhou.adbconnect.TokenStore
 import com.ezhou.adbconnect.service.AdbControlService
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -60,6 +69,10 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
 
+        if (savedInstanceState == null) {
+            Metrics.record(applicationContext, MetricEvent.APP_OPEN)
+        }
+
         setContent {
             AdbConnectTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
@@ -78,6 +91,7 @@ private data class UiState(
     val token: String = "",
     val busy: Boolean = false,
     val lastError: String? = null,
+    val metrics: MetricsSnapshot? = null,
 )
 
 @Composable
@@ -88,13 +102,16 @@ private fun AdbConnectScreen() {
 
     LaunchedEffect(Unit) {
         while (true) {
-            val serviceRunning = withContext(Dispatchers.IO) { isServiceListening() }
+            val (serviceRunning, metricsSnapshot) = withContext(Dispatchers.IO) {
+                isServiceListening() to Metrics.snapshot(context)
+            }
             val status = AdbControlService.currentStatus(context, resolvePort = false)
             state = state.copy(
                 serviceRunning = serviceRunning,
                 permissionGranted = status.optBoolean("permissionGranted"),
                 debuggingEnabled = status.optBoolean("debuggingEnabled"),
                 port = if (status.isNull("port")) null else status.optInt("port"),
+                metrics = metricsSnapshot,
             )
             delay(3000)
         }
@@ -117,6 +134,8 @@ private fun AdbConnectScreen() {
             StatusRow("Debugging port", state.port?.toString() ?: "unknown")
         }
 
+        state.metrics?.let { UsageSection(it) }
+
         if (!state.permissionGranted) {
             Text(
                 "Grant this once (bootstrap.sh does it automatically), then relaunch:",
@@ -131,6 +150,7 @@ private fun AdbConnectScreen() {
         Button(
             onClick = {
                 scope.launch {
+                    Metrics.record(context, MetricEvent.ENABLE_MANUAL)
                     state = state.copy(busy = true, lastError = null)
                     val status = AdbControlService.enableAndResolve(context)
                     state = state.copy(
@@ -150,6 +170,68 @@ private fun AdbConnectScreen() {
         state.lastError?.let {
             Text(it, color = MaterialTheme.colorScheme.error)
         }
+    }
+}
+
+private val dateFormatter: DateTimeFormatter = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
+private val countColumnWidth = 48.dp
+
+@Composable
+private fun UsageSection(metrics: MetricsSnapshot) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Usage", style = MaterialTheme.typography.titleSmall)
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Text("", modifier = Modifier.weight(1f))
+            Text(
+                "30d",
+                style = MaterialTheme.typography.labelSmall,
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(countColumnWidth),
+            )
+            Text(
+                "all",
+                style = MaterialTheme.typography.labelSmall,
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(countColumnWidth),
+            )
+        }
+        MetricEvent.entries.forEach { event ->
+            val count = metrics.counts[event] ?: EventCount(0, 0)
+            MetricRow(
+                label = event.label,
+                last30 = count.last30,
+                total = count.total,
+                indent = if (event.breaksDownEnable) 12.dp else 0.dp,
+            )
+        }
+        Text(
+            "Tracking since ${metrics.since.format(dateFormatter)}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun MetricRow(label: String, last30: Long, total: Long, indent: Dp) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f).padding(start = indent),
+        )
+        Text(
+            last30.toString(),
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(countColumnWidth),
+        )
+        Text(
+            total.toString(),
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(countColumnWidth),
+        )
     }
 }
 

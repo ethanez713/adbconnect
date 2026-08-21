@@ -12,6 +12,8 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.ezhou.adbconnect.MetricEvent
+import com.ezhou.adbconnect.Metrics
 import com.ezhou.adbconnect.R
 import com.ezhou.adbconnect.SecureSettingsWriter
 import com.ezhou.adbconnect.TokenStore
@@ -52,6 +54,7 @@ class AdbControlService : Service() {
     override fun onCreate() {
         super.onCreate()
         startForegroundNotification()
+        Metrics.record(applicationContext, MetricEvent.SERVICE_START)
         startServer()
     }
 
@@ -98,6 +101,7 @@ class AdbControlService : Service() {
                 }
             } catch (e: IOException) {
                 Log.e(TAG, "failed to bind $LISTEN_PORT", e)
+                Metrics.record(applicationContext, MetricEvent.SERVICE_BIND_FAILED)
                 return@thread
             }
             serverSocket = socket
@@ -125,14 +129,20 @@ class AdbControlService : Service() {
             return statusJson(enabled, port, granted)
         }
 
-        /** Same path the HTTP `/enable` endpoint and the in-app button both call. */
+        /** Same path the HTTP `/enable` endpoint and the in-app button both call -- outcome
+         * counters live here, but which caller triggered it is recorded at each call site instead,
+         * since this function has no way to tell them apart. */
         suspend fun enableAndResolve(context: Context): JSONObject {
             val granted = SecureSettingsWriter.isPermissionGranted(context)
             if (!granted) {
+                Metrics.record(context, MetricEvent.ENABLE_DENIED)
                 return statusJson(SecureSettingsWriter.isWirelessDebuggingEnabled(context), null, false)
             }
+            val wasEnabled = SecureSettingsWriter.isWirelessDebuggingEnabled(context)
+            Metrics.record(context, if (wasEnabled) MetricEvent.ENABLE_ALREADY_ON else MetricEvent.ENABLE_FLIPPED)
             SecureSettingsWriter.enableWirelessDebugging(context)
             val port = findAdbTlsConnectPort(context)
+            Metrics.record(context, if (port != null) MetricEvent.ENABLE_PORT_FOUND else MetricEvent.ENABLE_PORT_TIMEOUT)
             val enabled = SecureSettingsWriter.isWirelessDebuggingEnabled(context)
             return statusJson(enabled, port, true)
         }
@@ -179,14 +189,17 @@ private fun handleConnection(context: Context, socket: Socket) {
 
             val token = params["token"]
             if (token == null || token != TokenStore.getOrCreate(context)) {
+                Metrics.record(context, MetricEvent.AUTH_REJECTED)
                 writeResponse(s.getOutputStream(), 401, errorJson("bad token"))
                 return
             }
 
             val body = runBlocking {
                 if (path == "/enable") {
+                    Metrics.record(context, MetricEvent.ENABLE_REMOTE)
                     AdbControlService.enableAndResolve(context)
                 } else {
+                    Metrics.record(context, MetricEvent.STATUS_REMOTE)
                     AdbControlService.currentStatus(context, resolvePort = true)
                 }
             }

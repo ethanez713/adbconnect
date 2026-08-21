@@ -51,6 +51,12 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -70,4 +76,12 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    testImplementation("junit:junit:4.13.2")
+    // android.jar ships org.json as stubs that throw; MetricsStore persists with it, so the
+    // JVM tests need a real implementation ahead of the stub on the classpath.
+    testImplementation("org.json:json:20240303")
+    // android.jar's org.json classes are unit-test stubs that throw on every call; this pulls in
+    // the real implementation so MetricsStore's JSON round-trip is actually exercised.
+    testImplementation("org.json:json:20231013")
 }

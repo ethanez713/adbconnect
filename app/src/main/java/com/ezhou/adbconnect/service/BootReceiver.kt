@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.ContextCompat
+import com.ezhou.adbconnect.MetricEvent
+import com.ezhou.adbconnect.Metrics
 
 /**
  * Wireless debugging is exactly what a reboot turns off, and a reboot is also the one moment
@@ -13,6 +15,7 @@ import androidx.core.content.ContextCompat
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        Metrics.record(context, MetricEvent.SERVICE_BOOT_START)
         ContextCompat.startForegroundService(context, Intent(context, AdbControlService::class.java))
     }
 }
