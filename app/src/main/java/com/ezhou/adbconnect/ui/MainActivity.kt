@@ -1,10 +1,8 @@
 package com.ezhou.adbconnect.ui
 
-import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
@@ -71,10 +69,6 @@ class MainActivity : ComponentActivity() {
         // debugging drops -- start it here so a plain launch from the launcher is enough, without
         // relying on the user to separately know the service needs kicking off.
         ContextCompat.startForegroundService(this, Intent(this, AdbControlService::class.java))
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
-        }
 
         if (savedInstanceState == null) {
             Metrics.record(applicationContext, MetricEvent.APP_OPEN)
