@@ -1,9 +1,13 @@
 package com.ezhou.adbconnect.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -91,6 +95,7 @@ private data class UiState(
     val permissionGranted: Boolean = false,
     val debuggingEnabled: Boolean = false,
     val port: Int? = null,
+    val dozeExempt: Boolean = false,
     val token: String = "",
     val busy: Boolean = false,
     val lastError: String? = null,
@@ -119,6 +124,7 @@ private fun AdbConnectScreen() {
                     permissionGranted = status.optBoolean("permissionGranted"),
                     debuggingEnabled = status.optBoolean("debuggingEnabled"),
                     port = if (status.isNull("port")) null else status.optInt("port"),
+                    dozeExempt = isIgnoringBatteryOptimizations(context),
                     metrics = metricsSnapshot,
                 )
                 delay(3000)
@@ -141,6 +147,19 @@ private fun AdbConnectScreen() {
             StatusRow("WRITE_SECURE_SETTINGS granted", if (state.permissionGranted) "yes" else "no")
             StatusRow("Wireless debugging", if (state.debuggingEnabled) "on" else "off")
             StatusRow("Debugging port", state.port?.toString() ?: "unknown")
+            StatusRow("Reachable while idle", if (state.dozeExempt) "yes" else "no — see below")
+        }
+
+        if (!state.dozeExempt) {
+            Text(
+                "Android is free to cut this app off the network once the phone has been idle a " +
+                    "while, which is when the PC needs it most. Exempt it from battery " +
+                    "optimisation — bootstrap.sh does this over adb, or tap here.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(onClick = { context.startActivity(batteryOptimizationSettingsIntent(context)) }) {
+                Text("Exempt from battery optimisation")
+            }
         }
 
         state.metrics?.let { UsageSection(it) }
@@ -267,6 +286,27 @@ private fun SelectableMono(text: String) {
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(12.dp),
         )
+    }
+}
+
+private fun isIgnoringBatteryOptimizations(context: Context): Boolean =
+    context.getSystemService(PowerManager::class.java)
+        .isIgnoringBatteryOptimizations(context.packageName)
+
+/**
+ * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS shows a one-tap dialog but is Play-policy restricted;
+ * this app is sideloaded, so it is the right one. Should a future Android refuse to resolve it, the
+ * settings list still gets the user to the same toggle in two more taps.
+ */
+private fun batteryOptimizationSettingsIntent(context: Context): Intent {
+    val request = Intent(
+        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        Uri.parse("package:${context.packageName}"),
+    )
+    return if (request.resolveActivity(context.packageManager) != null) {
+        request
+    } else {
+        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
     }
 }
 

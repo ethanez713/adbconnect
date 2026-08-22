@@ -35,6 +35,12 @@ adb -s "$SERIAL" install -r "$APK"
 log "granting WRITE_SECURE_SETTINGS"
 adb -s "$SERIAL" shell pm grant "$APP_ID" android.permission.WRITE_SECURE_SETTINGS
 
+# Doze would otherwise drop inbound packets to the listener once the phone has been
+# idle for a while -- the exact state the app exists to recover from. Doing it here
+# over adb means the user never has to find the toggle by hand.
+log "exempting from battery optimisation"
+adb -s "$SERIAL" shell dumpsys deviceidle whitelist "+$APP_ID" >/dev/null
+
 log "starting the app"
 adb -s "$SERIAL" shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 >/dev/null
 

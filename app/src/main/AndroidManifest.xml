@@ -8,6 +8,12 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Doze drops inbound traffic to a non-exempt UID's sockets, which silently defeats the
+         listener at exactly the moment it is needed: the phone has been idle for a while, wireless
+         debugging has died, and the PC's /enable request is the only way back in. The foreground
+         service keeps the process alive; only this keeps it reachable. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
