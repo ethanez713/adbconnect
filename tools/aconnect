@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+# aconnect — wireless-ADB attach for "Ethan's S25 Ultra", with no ports to paste.
+#
+# /usr/bin/adb (v28) cannot `adb pair` ("unknown command pair"); only the SDK
+# adb (v37) can, so this always uses the SDK one.
+#
+# Android randomises the wireless-debugging connect port every session, so a
+# remembered endpoint goes stale on every reboot or Wi-Fi change. Two mechanisms
+# recover it without asking:
+#
+#   mDNS discovery — requires WSL networkingMode=mirrored in %UserProfile%\
+#   .wslconfig. Under WSL's default NAT the phone's multicast never reaches this
+#   VM and `adb mdns services` returns an empty list with no error, which looks
+#   exactly like "no phone on the network".
+#
+#   Pinning to 5555 — after the first attach, `adb tcpip 5555` restarts adbd on
+#   the fixed legacy port, so subsequent attaches need no discovery at all. This
+#   survives until the phone reboots. Still RSA-authenticated, but not TLS; set
+#   ACONNECT_NO_PIN=1 to keep the TLS endpoint instead.
+#
+#   adbwake — when neither works there is nothing listening to find, because
+#   Android has switched wireless debugging off (which it does on a Wi-Fi
+#   change, the same event that invalidates everything remembered above). The
+#   ADB Connection Service app answers on a fixed port whatever the network, so
+#   it is both the way back in and the only way to locate the phone at all.
+#
+# Usage:
+#   aconnect                              Attach: reuse → saved → mDNS → wake
+#   aconnect <ip:port>                    Attach to an explicit endpoint
+#   aconnect pair <ip:pairport> <code>    Pair, then auto-find the connect port
+#   aconnect pair <ip:pairport> <code> <ip:connectport>
+#   aconnect scan                         Force a LAN sweep for port 5555
+#   aconnect status                       Show what is currently attached
+#   aconnect serial                       Print the one transport to pass to `adb -s`
+set -uo pipefail
+
+ADB="$HOME/Android/Sdk/platform-tools/adb"
+[ -x "$ADB" ] || ADB="$(command -v adb)"
+[ -n "$ADB" ] || { echo "!! no adb on PATH" >&2; exit 1; }
+
+STATE="$HOME/.config/android-device"
+PIN_PORT=5555
+mkdir -p "$(dirname "$STATE")"
+
+# Progress goes to stderr so functions can return endpoints on stdout.
+log() { printf '>> %s\n' "$*" >&2; }
+err() { printf '!! %s\n' "$*" >&2; }
+
+# A most-recent-first list, not a single value. The phone's mDNS advert goes
+# quiet while its port stays open, so the last known ip:port has to survive
+# alongside the service name rather than being overwritten by it — otherwise
+# the only address that still works is the one thing we no longer remember.
+save() {
+  local tmp; tmp="$(mktemp)"
+  { printf '%s\n' "$1"; cat "$STATE" 2>/dev/null; } \
+    | awk 'NF && !seen[$0]++' | head -4 > "$tmp"
+  mv "$tmp" "$STATE"
+}
+# Endpoints saved on another network are unroutable by inspection, and dialling
+# them anyway makes the log read "the phone is not answering" when the truth is
+# "that address is not on this LAN". An mDNS service name carries no address, so
+# it is never filtered out.
+candidates() {
+  local prefix ep
+  prefix="$(lan_prefix)"
+  while read -r ep; do
+    [ -n "$ep" ] || continue
+    if [ "$ep" != "${ep#*:}" ] && [ -n "$prefix" ] && [ "${ep%.*}" != "$prefix" ]; then
+      log "$ep — different subnet, skipping"
+      continue
+    fi
+    printf '%s\n' "$ep"
+  done < <(cat "$STATE" 2>/dev/null)
+}
+
+# When adb finds the phone over mDNS it attaches under the service name rather
+# than an ip:port, so matching only ip:port misses a device that is already up.
+attached_endpoint() {
+  "$ADB" devices 2>/dev/null \
+    | awk '$2=="device" && ($1 ~ /^[0-9]+(\.[0-9]+){3}:[0-9]+$/ ||
+                            $1 ~ /_adb-tls-connect\._tcp$/) {print $1; exit}'
+}
+
+port_open() {
+  local hp="$1"
+  timeout "${ACONNECT_PROBE_TIMEOUT:-1.5}" \
+    bash -c "exec 3<>/dev/tcp/${hp%%:*}/${hp##*:}" 2>/dev/null
+}
+
+# The probe is not just an optimisation: `adb connect` to an unroutable host
+# blocks for the full TCP SYN timeout (~2 min), which stalls the whole ladder
+# whenever the saved endpoint is from a different network.
+#
+# Only an ip:port can be probed. An mDNS service name has no colon in it, so
+# both halves of the split come back as the whole string and the probe fails
+# on every service name — which silently broke the saved-endpoint path
+# entirely, since that is exactly the form attach() saves.
+try_connect() {
+  if [ "$1" != "${1#*:}" ] && ! port_open "$1"; then
+    log "$1 not listening"; return 1
+  fi
+  timeout 15 "$ADB" connect "$1" 2>&1 | grep -qiE '^(connected|already connected) to'
+}
+
+# Polls, because `adb mdns services` answers immediately from a cache that is
+# still empty for a second or two after the adb server starts. A single call in
+# a fresh session therefore reports "no device" for a phone that is sitting
+# right there advertising — measured cold at ~2s to populate.
+discover() {
+  local svc="${1:-_adb-tls-connect}" out
+  local deadline=$(( $(date +%s) + ${ACONNECT_DISCOVER_SECS:-12} ))
+  while :; do
+    out="$(timeout 5 "$ADB" mdns services 2>/dev/null \
+           | awk -v s="$svc" '$2 ~ s {print $3; exit}')"
+    [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+    [ "$(date +%s)" -ge "$deadline" ] && return 1
+    sleep 1
+  done
+}
+
+# An mDNS-attached device's serial is a service name with no address in it, so
+# the IP has to come back out of the service record.
+serial_ip() {
+  case "$1" in
+    *[0-9]:[0-9]*) printf '%s\n' "${1%%:*}" ;;
+    *)             discover | cut -d: -f1 ;;
+  esac
+}
+
+# Keyed off the default-route interface: WSL also carries a scope-global
+# 10.255.255.254/32 alias on lo, which otherwise wins and yields a dead subnet.
+lan_prefix() {
+  local dev
+  dev="$(ip -4 route show default 2>/dev/null \
+         | awk '{for (i=1; i<NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+  ip -4 -o addr show ${dev:+dev "$dev"} scope global 2>/dev/null \
+    | awk '$2!="lo" && $4 !~ /\/3[12]$/ {print $4; exit}' \
+    | cut -d/ -f1 | sed 's/\.[0-9]*$//'
+}
+
+# Reachable only via `aconnect scan`, never the automatic ladder: it can find
+# only a phone that `adb tcpip 5555` has pinned, and a pinned phone is already
+# the case the saved endpoints handle without any scanning. Wireless debugging
+# binds a random high port, and when Android has switched it off, none at all —
+# so in the ladder this was 254 hosts of latency that could not change anything.
+sweep() {
+  local prefix; prefix="$(lan_prefix)"
+  [ -n "$prefix" ] || { err "could not determine a LAN subnet to sweep"; return 1; }
+  log "sweeping ${prefix}.0/24 for port $PIN_PORT"
+  local hits; hits="$(mktemp)"
+  local i batch=0
+  # A sub-second probe misses the phone: Wi-Fi power-save delays its first
+  # SYN-ACK well past what a mains-powered host needs, so the sweep drops the
+  # one device it exists to find. The subnet is probed in parallel, so this is
+  # the wall time of the whole sweep, not a per-host cost.
+  for i in $(seq 1 254); do
+    ( timeout "${ACONNECT_SWEEP_TIMEOUT:-3}" bash -c "exec 3<>/dev/tcp/${prefix}.${i}/${PIN_PORT}" 2>/dev/null \
+        && printf '%s:%s\n' "${prefix}.${i}" "$PIN_PORT" >> "$hits" ) &
+    batch=$(( batch + 1 ))
+    [ "$batch" -ge 128 ] && { wait; batch=0; }
+  done
+  wait
+  local found; found="$(head -1 "$hits" 2>/dev/null)"
+  rm -f "$hits"
+  [ -n "$found" ] || return 1
+  printf '%s\n' "$found"
+}
+
+# Off by default: with mDNS working, discovery already handles the randomised
+# port, and pinning tears down a healthy TLS session to replace it with a
+# plain-RSA one — a drop, in a tool whose job is to avoid drops. Worth setting
+# ACONNECT_PIN=1 only on a network that blocks multicast, where `aconnect scan`
+# is the only way back in.
+#
+# Echoes the endpoint to remember: ip:5555 if the pin took, else the original.
+pin() {
+  local ep="$1" ip
+  if [ "${ACONNECT_PIN:-0}" != "1" ] || [ "${ep##*:}" = "$PIN_PORT" ]; then
+    printf '%s\n' "$ep"; return 0
+  fi
+  ip="$(serial_ip "$ep")"
+  [ -n "$ip" ] || { err "no IP for $ep; skipping pin"; printf '%s\n' "$ep"; return 0; }
+  log "pinning adbd to ${ip}:${PIN_PORT} so the next attach needs no discovery"
+  if ! "$ADB" -s "$ep" tcpip "$PIN_PORT" >/dev/null 2>&1; then
+    err "device refused tcpip $PIN_PORT; keeping $ep"
+    printf '%s\n' "$ep"; return 0
+  fi
+  local n
+  for n in 1 2 3; do
+    sleep 2
+    if try_connect "${ip}:${PIN_PORT}"; then printf '%s\n' "${ip}:${PIN_PORT}"; return 0; fi
+  done
+  err "adbd did not come back on $PIN_PORT; falling back to $ep"
+  try_connect "$ep" >/dev/null
+  printf '%s\n' "$ep"
+}
+
+land() { save "$(pin "$1")"; }
+
+# adb auto-connects to whatever it finds over mDNS, but not instantly. Racing it
+# with a manual connect is worse than waiting: adb keeps one transport per
+# address it is handed, so the same phone ends up listed twice — once as the
+# service name, once as ip:port — and every untargeted adb command then dies
+# with "more than one device/emulator".
+await_attached() {
+  local deadline=$(( $(date +%s) + ${ACONNECT_AUTOCONNECT_SECS:-6} )) ep
+  while :; do
+    ep="$(attached_endpoint)"
+    [ -n "$ep" ] && { printf '%s\n' "$ep"; return 0; }
+    [ "$(date +%s)" -ge "$deadline" ] && return 1
+    sleep 1
+  done
+}
+
+# Collapses the duplicate described above, keeping adb's own service-name
+# transport because it re-resolves the randomised port by itself.
+dedupe() {
+  local svc svc_serial s serial
+  svc="$("$ADB" devices 2>/dev/null \
+        | awk 'NR>1 && $2=="device" && $1 ~ /_adb-tls-connect\._tcp$/ {print $1; exit}')"
+  [ -n "$svc" ] || return 0
+  svc_serial="$(timeout 10 "$ADB" -s "$svc" shell getprop ro.serialno 2>/dev/null | tr -d '\r')"
+  [ -n "$svc_serial" ] || return 0
+  for s in $("$ADB" devices 2>/dev/null \
+             | awk 'NR>1 && $2=="device" && $1 ~ /^[0-9]+(\.[0-9]+){3}:[0-9]+$/ {print $1}'); do
+    serial="$(timeout 10 "$ADB" -s "$s" shell getprop ro.serialno 2>/dev/null | tr -d '\r')"
+    if [ "$serial" = "$svc_serial" ]; then
+      log "dropping duplicate transport $s (same phone as $svc)"
+      "$ADB" disconnect "$s" >/dev/null 2>&1
+    fi
+  done
+  # Remember the transport that survived, not the one just dropped — otherwise
+  # the next run reconnects the dead ip:port and recreates the duplicate. The
+  # service name is the better thing to keep anyway: it outlives port rotation.
+  save "$svc"
+}
+
+attach() {
+  local ep
+  timeout 20 "$ADB" start-server >/dev/null 2>&1
+  ep="$(await_attached)"
+  if [ -n "$ep" ]; then log "already attached: $ep"; save "$ep"; return 0; fi
+
+  while read -r ep; do
+    [ -n "$ep" ] || continue
+    if try_connect "$ep"; then
+      log "reattached known endpoint $ep"; land "$ep"; return 0
+    fi
+  done < <(candidates)
+
+  ep="$(discover)"
+  if [ -n "$ep" ]; then
+    log "mDNS found $ep"
+    if try_connect "$ep"; then land "$ep"; return 0; fi
+  else
+    log "mDNS found nothing — check WSL mirrored networking and that Wireless"
+    log "debugging is ON (Android turns it off on reboot and on Wi-Fi change)"
+  fi
+  return 1
+}
+
+wake() {
+  command -v adbwake >/dev/null 2>&1 || return 1
+  log "asking the phone to re-enable wireless debugging"
+  local ep
+  ep="$(adbwake)" || return 1
+  log "phone re-enabled debugging at $ep"
+  try_connect "$ep" && { land "$ep"; return 0; }
+  return 1
+}
+
+# A sleeping phone drops inbound packets, but its radio surfaces periodically —
+# measured going from every port closed to answering on its own in ~13s with
+# nothing prompting it. So the ladder is worth repeating for a while before
+# concluding the phone is gone; one pass reports a failure that fixes itself.
+attach_persistent() {
+  local deadline=$(( $(date +%s) + ${ACONNECT_RETRY_SECS:-60} ))
+  while :; do
+    attach && return 0
+    # Every rung in attach() assumes adbd is listening, so all of them fail
+    # together the moment Android switches wireless debugging off — and waiting
+    # out the retry window first only delays the one rung that can fix it.
+    wake && return 0
+    [ "$(date +%s)" -ge "$deadline" ] && break
+    log "not reachable yet — retrying until $(date -d "@$deadline" +%H:%M:%S)"
+    sleep 5
+  done
+  return 1
+}
+
+case "${1:-}" in
+  pair)
+    [ $# -ge 3 ] || { err "usage: aconnect pair <ip:pairport> <code> [ip:connectport]"; exit 2; }
+    log "adb pair $2"
+    "$ADB" pair "$2" "$3" || exit 1
+    if [ $# -ge 4 ]; then
+      try_connect "$4" && land "$4"
+    else
+      log "finding the connect port via mDNS"
+      ep="$(discover)"
+      if [ -n "$ep" ] && try_connect "$ep"; then
+        land "$ep"
+      else
+        err "paired, but could not discover the connect port"
+        err "rerun as: aconnect <ip:connectport>"
+        exit 1
+      fi
+    fi
+    ;;
+  scan)
+    ep="$(sweep)" && [ -n "$ep" ] && try_connect "$ep" && save "$ep" \
+      || { err "no device answering on port $PIN_PORT"; exit 1; }
+    ;;
+  serial)
+    # adb re-adds the mDNS twin at any point in a session, so the duplicate that
+    # dedupe collapsed at attach time is usually back by the time a later command
+    # runs. Callers derive the serial here instead of hand-rolling `adb devices |
+    # awk`, which picks whichever transport is listed first and then dies with
+    # "more than one device/emulator" as soon as both are.
+    timeout 20 "$ADB" start-server >/dev/null 2>&1
+    dedupe
+    ep="$(attached_endpoint)"
+    [ -n "$ep" ] || { err "no phone attached; run: aconnect"; exit 1; }
+    printf '%s\n' "$ep"
+    exit 0
+    ;;
+  status)
+    log "known endpoints: $(candidates | paste -sd' ' || echo none)"
+    log "mDNS services:"
+    timeout 12 "$ADB" mdns services 2>&1 >&2
+    ;;
+  "")
+    attach_persistent || { err "could not attach; wake the phone, or if that fails check the Wireless debugging screen and run: aconnect pair <ip:pairport> <code>"; exit 1; }
+    ;;
+  *)
+    try_connect "$1" && land "$1" || { err "connect to $1 failed"; exit 1; }
+    ;;
+esac
+
+dedupe
+"$ADB" devices

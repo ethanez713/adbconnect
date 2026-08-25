@@ -18,6 +18,13 @@ TOKEN_FILE="$CONFIG_DIR/adbconnect-token"
 log() { printf '>> %s\n' "$*"; }
 err() { printf '!! %s\n' "$*" >&2; }
 
+# Symlinked, not copied: an installed copy that drifts from the repo one is the same
+# class of bug as the two state files that could disagree about the phone's IP.
+log "linking tools into ~/.local/bin"
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$PWD/tools/aconnect" "$HOME/.local/bin/aconnect"
+ln -sfn "$PWD/tools/adbwake" "$HOME/.local/bin/adbwake"
+
 command -v adb >/dev/null || { err "adb not on PATH -- source ~/android-tooling/env.sh first"; exit 1; }
 
 # An emulator is frequently attached alongside the phone on this box; an
