@@ -30,6 +30,7 @@ enum class MetricEvent(val id: String, val label: String, val breaksDownEnable: 
     SERVICE_BOOT_START("service.boot_start", "Boot restarts"),
     SERVICE_BIND_FAILED("service.bind_failed", "Port bind failures"),
     AUTH_REJECTED("auth.rejected", "Rejected (bad token)"),
+    REQUEST_STALLED("request.stalled", "Requests that timed out"),
 }
 
 data class EventCount(val total: Long, val last30: Long)

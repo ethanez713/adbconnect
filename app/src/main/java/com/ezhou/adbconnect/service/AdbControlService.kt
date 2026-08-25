@@ -26,6 +26,8 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -33,6 +35,9 @@ import org.json.JSONObject
 private const val TAG = "AdbControlService"
 private const val CHANNEL_ID = "adbconnect_service"
 private const val NOTIFICATION_ID = 1
+
+/** Comfortably past the port finder's own 8s budget, and inside the 15s the caller allows. */
+private const val RESPONSE_BUDGET_MS = 12_000L
 
 /**
  * Foreground service holding a plain TCP listener on [LISTEN_PORT]. It has to be a foreground
@@ -194,20 +199,53 @@ private fun handleConnection(context: Context, socket: Socket) {
                 return
             }
 
-            val body = runBlocking {
-                if (path == "/enable") {
-                    Metrics.record(context, MetricEvent.ENABLE_REMOTE)
-                    AdbControlService.enableAndResolve(context)
-                } else {
-                    Metrics.record(context, MetricEvent.STATUS_REMOTE)
-                    AdbControlService.currentStatus(context, resolvePort = true)
+            val body = answerWithin(RESPONSE_BUDGET_MS) {
+                runBlocking {
+                    if (path == "/enable") {
+                        Metrics.record(context, MetricEvent.ENABLE_REMOTE)
+                        AdbControlService.enableAndResolve(context)
+                    } else {
+                        Metrics.record(context, MetricEvent.STATUS_REMOTE)
+                        AdbControlService.currentStatus(context, resolvePort = true)
+                    }
                 }
             }
-            writeResponse(s.getOutputStream(), 200, body)
+            if (body == null) {
+                Metrics.record(context, MetricEvent.REQUEST_STALLED)
+                writeResponse(s.getOutputStream(), 503, stalledJson(context))
+            } else {
+                writeResponse(s.getOutputStream(), 200, body)
+            }
         } catch (e: IOException) {
             Log.w(TAG, "connection error", e)
         }
     }
+}
+
+/**
+ * A handler that never returns leaves the caller unable to tell a wedged phone from an absent one,
+ * and burns the caller's whole timeout budget doing it. Both the settings write and NSD discovery
+ * are binder calls into system services and neither is guaranteed to come back, so the answer is
+ * produced on a thread this one is willing to abandon.
+ */
+private fun answerWithin(budgetMs: Long, work: () -> JSONObject): JSONObject? {
+    val answer = ArrayBlockingQueue<JSONObject>(1)
+    thread(name = "adbconnect-work", isDaemon = true) {
+        runCatching(work)
+            .onSuccess { answer.offer(it) }
+            .onFailure { Log.w(TAG, "request handler failed", it) }
+    }
+    return answer.poll(budgetMs, TimeUnit.MILLISECONDS)
+}
+
+/** Which call stalled cannot be seen from outside the phone, but the setting can: if it reads on,
+ * the write landed and discovery is what hung; if off, the write itself never came back. */
+private fun stalledJson(context: Context): JSONObject = JSONObject().apply {
+    put("ok", false)
+    put("error", "device did not answer within ${RESPONSE_BUDGET_MS}ms")
+    put("debuggingEnabled", SecureSettingsWriter.isWirelessDebuggingEnabled(context))
+    put("permissionGranted", SecureSettingsWriter.isPermissionGranted(context))
+    put("model", Build.MODEL)
 }
 
 private fun parseQuery(query: String?): Map<String, String> {
@@ -231,6 +269,7 @@ private fun writeResponse(output: OutputStream, status: Int, body: JSONObject) {
         200 -> "OK"
         400 -> "Bad Request"
         401 -> "Unauthorized"
+        503 -> "Service Unavailable"
         else -> "Not Found"
     }
     val bytes = body.toString().toByteArray(Charsets.UTF_8)
