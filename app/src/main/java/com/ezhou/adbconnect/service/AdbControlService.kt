@@ -26,6 +26,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
+import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -196,7 +197,7 @@ private fun handleConnection(context: Context, socket: Socket) {
             }
 
             val token = params["token"]
-            if (token == null || token != TokenStore.getOrCreate(context)) {
+            if (token == null || !constantTimeEquals(token, TokenStore.getOrCreate(context))) {
                 Metrics.record(context, MetricEvent.AUTH_REJECTED)
                 writeResponse(s.getOutputStream(), 401, errorJson("bad token"))
                 return
@@ -232,6 +233,11 @@ private fun handleConnection(context: Context, socket: Socket) {
             }
         } catch (e: IOException) {
             Log.w(TAG, "connection error", e)
+        } catch (e: Exception) {
+            // Android's default handler kills the process on any uncaught throw, on any thread.
+            // A service whose entire job is answering when nothing else can must not be
+            // stoppable by one bad request, whatever is wrong with it.
+            Log.w(TAG, "request failed", e)
         }
     }
 }
@@ -279,14 +285,24 @@ private fun stalledJson(context: Context): JSONObject = JSONObject().apply {
     put("model", Build.MODEL)
 }
 
+/** String equality short-circuits on the first differing byte, which times how much of a guess
+ * was right. The channel is thin over a LAN, but a fixed-cost compare closes it for one line. */
+private fun constantTimeEquals(a: String, b: String): Boolean =
+    MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
+
 private fun parseQuery(query: String?): Map<String, String> {
     if (query.isNullOrEmpty()) return emptyMap()
     return query.split("&").mapNotNull { pair ->
         val idx = pair.indexOf('=')
         if (idx < 0) return@mapNotNull null
-        val key = URLDecoder.decode(pair.substring(0, idx), "UTF-8")
-        val value = URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
-        key to value
+        // URLDecoder throws on a malformed %-escape, and this runs before the token is
+        // checked -- so a five-character GET from anyone on the LAN used to take the whole
+        // process down without authenticating at all. A pair that will not decode is simply
+        // not a pair.
+        runCatching {
+            URLDecoder.decode(pair.substring(0, idx), "UTF-8") to
+                URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
+        }.getOrNull()
     }.toMap()
 }
 
