@@ -28,6 +28,7 @@ import java.net.Socket
 import java.net.URLDecoder
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -38,6 +39,8 @@ private const val NOTIFICATION_ID = 1
 
 /** Comfortably past the port finder's own 8s budget, and inside the 15s the caller allows. */
 private const val RESPONSE_BUDGET_MS = 12_000L
+
+private val enableInFlight = AtomicBoolean(false)
 
 /**
  * Foreground service holding a plain TCP listener on [LISTEN_PORT]. It has to be a foreground
@@ -199,15 +202,26 @@ private fun handleConnection(context: Context, socket: Socket) {
                 return
             }
 
-            val body = answerWithin(RESPONSE_BUDGET_MS) {
-                runBlocking {
-                    if (path == "/enable") {
-                        Metrics.record(context, MetricEvent.ENABLE_REMOTE)
-                        AdbControlService.enableAndResolve(context)
-                    } else {
-                        Metrics.record(context, MetricEvent.STATUS_REMOTE)
-                        AdbControlService.currentStatus(context, resolvePort = true)
+            val body = if (path == "/enable") {
+                Metrics.record(context, MetricEvent.ENABLE_REMOTE)
+                // A write parked on the consent dialog stays parked until it is tapped, so a
+                // caller that retries would only stack up threads waiting on the same tap and
+                // pay the full budget each time to learn nothing new.
+                if (!enableInFlight.compareAndSet(false, true)) {
+                    null
+                } else {
+                    answerWithin(RESPONSE_BUDGET_MS) {
+                        try {
+                            runBlocking { AdbControlService.enableAndResolve(context) }
+                        } finally {
+                            enableInFlight.set(false)
+                        }
                     }
+                }
+            } else {
+                Metrics.record(context, MetricEvent.STATUS_REMOTE)
+                answerWithin(RESPONSE_BUDGET_MS) {
+                    runBlocking { AdbControlService.currentStatus(context, resolvePort = true) }
                 }
             }
             if (body == null) {
@@ -238,12 +252,29 @@ private fun answerWithin(budgetMs: Long, work: () -> JSONObject): JSONObject? {
     return answer.poll(budgetMs, TimeUnit.MILLISECONDS)
 }
 
-/** Which call stalled cannot be seen from outside the phone, but the setting can: if it reads on,
- * the write landed and discovery is what hung; if off, the write itself never came back. */
+/**
+ * The first time wireless debugging is enabled on a given Wi-Fi network Android puts up "Allow
+ * wireless debugging on this network?", and the write to `adb_wifi_enabled` does not return until
+ * someone taps it. That gesture is the point of the dialog, so no permission this app can hold
+ * will dismiss it -- the most it can do is stop pretending to be unreachable and name the tap it
+ * is waiting for.
+ *
+ * Which call stalled cannot be seen from outside the phone, but the setting can: if it reads on,
+ * the write landed and port discovery is what overran; if off, the write is still parked.
+ */
 private fun stalledJson(context: Context): JSONObject = JSONObject().apply {
+    val enabled = SecureSettingsWriter.isWirelessDebuggingEnabled(context)
     put("ok", false)
-    put("error", "device did not answer within ${RESPONSE_BUDGET_MS}ms")
-    put("debuggingEnabled", SecureSettingsWriter.isWirelessDebuggingEnabled(context))
+    put("awaitingConsent", !enabled)
+    put(
+        "error",
+        if (enabled) {
+            "debugging is on but the adb port did not resolve within ${RESPONSE_BUDGET_MS}ms"
+        } else {
+            "waiting for the on-device \"Allow wireless debugging on this network?\" prompt"
+        },
+    )
+    put("debuggingEnabled", enabled)
     put("permissionGranted", SecureSettingsWriter.isPermissionGranted(context))
     put("model", Build.MODEL)
 }

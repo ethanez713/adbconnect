@@ -97,10 +97,12 @@ enable_at() {
   # The phone bounds its own handler and says so rather than leaving us hanging,
   # so 503 is a diagnosis, not a transport failure.
   if [ "$http_code" = "503" ]; then
-    if [ "$(jq -r '.debuggingEnabled' <<<"$body" 2>/dev/null)" = "true" ]; then
-      err "$ip: debugging is on but the phone could not resolve its adb port in time"
+    if [ "$(jq -r '.awaitingConsent' <<<"$body" 2>/dev/null)" = "true" ]; then
+      err "$ip is waiting on the phone: tap Allow on \"Allow wireless debugging"
+      err "on this network?\". Android asks once per Wi-Fi network and nothing on"
+      err "the PC side can answer it."
     else
-      err "$ip: the phone stalled writing adb_wifi_enabled and gave up"
+      err "$ip: debugging is on but the phone could not resolve its adb port in time"
     fi
     return 2
   fi
