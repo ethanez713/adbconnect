@@ -7,55 +7,147 @@
 # The ADB Connection Service app is a standing HTTP listener on the phone that
 # can flip Settings.Global.adb_wifi_enabled back on when nothing else can reach
 # it -- see ~/adbconnect.
+#
+# Prints "<ip>:<port>" -- the endpoint to hand to `adb connect`.
+#
+# Usage:
+#   adbwake              Locate the phone, re-enable debugging, print ip:port
+#   adbwake <ip>         Try that IP first (a caller that already knows it)
 set -uo pipefail
 
 CONFIG="$HOME/.config/adbconnect"
 TOKEN_FILE="$HOME/.config/adbconnect-token"
 PORT=47821
 TIMEOUT=15
+PROBE_TIMEOUT="${ADBWAKE_PROBE_TIMEOUT:-3}"
 
+log() { printf '>> %s\n' "$*" >&2; }
 err() { printf '!! %s\n' "$*" >&2; }
 
-[ -f "$CONFIG" ] || { err "no $CONFIG (run tools/bootstrap.sh first)"; exit 1; }
 [ -f "$TOKEN_FILE" ] || { err "no $TOKEN_FILE (run tools/bootstrap.sh first)"; exit 1; }
-
-# shellcheck disable=SC1090
-source "$CONFIG"
-[ -n "${IP:-}" ] || { err "$CONFIG has no IP="; exit 1; }
-
 TOKEN="$(<"$TOKEN_FILE")"
 [ -n "$TOKEN" ] || { err "$TOKEN_FILE is empty"; exit 1; }
 
-response="$(curl -sS --max-time "$TIMEOUT" -w '\n%{http_code}' \
-  "http://$IP:$PORT/enable?token=$TOKEN" 2>&1)" || {
-  err "could not reach $IP:$PORT -- is the phone on this LAN and the app running?"
-  exit 1
+port_open() {
+  timeout "$PROBE_TIMEOUT" bash -c "exec 3<>/dev/tcp/$1/$PORT" 2>/dev/null
 }
 
-http_code="${response##*$'\n'}"
-body="${response%$'\n'*}"
+# Keyed off the default-route interface: WSL also carries a scope-global
+# 10.255.255.254/32 alias on lo, which otherwise wins and yields a dead subnet.
+lan_prefix() {
+  local dev
+  dev="$(ip -4 route show default 2>/dev/null \
+         | awk '{for (i=1; i<NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+  ip -4 -o addr show ${dev:+dev "$dev"} scope global 2>/dev/null \
+    | awk '$2!="lo" && $4 !~ /\/3[12]$/ {print $4; exit}' \
+    | cut -d/ -f1 | sed 's/\.[0-9]*$//'
+}
 
-if [ "$http_code" != "200" ]; then
-  err "HTTP $http_code from phone: $body"
-  exit 1
-fi
+# The listener's port is fixed and the service is always up, so the app is the
+# one thing on the phone that can be found by scanning. adbd cannot: wireless
+# debugging binds a random high port, and when it is off -- the case this whole
+# script exists for -- it binds nothing at all.
+sweep_for_listener() {
+  local prefix; prefix="$(lan_prefix)"
+  [ -n "$prefix" ] || { err "no default route; cannot work out which subnet to sweep"; return 1; }
+  log "sweeping ${prefix}.0/24 for the app's listener on $PORT"
+  local hits; hits="$(mktemp)"
+  local i batch=0
+  for i in $(seq 1 254); do
+    # A sub-second timeout here silently misses the phone: Wi-Fi power-save
+    # delays its first SYN-ACK well past what a mains-powered host needs, so the
+    # one device the sweep exists to find is the one it drops. Cheap to be
+    # generous -- the whole subnet is probed in parallel, so this is the wall
+    # time of the sweep, not the per-host cost.
+    ( timeout "$PROBE_TIMEOUT" bash -c "exec 3<>/dev/tcp/${prefix}.${i}/${PORT}" 2>/dev/null \
+        && printf '%s\n' "${prefix}.${i}" >> "$hits" ) &
+    batch=$(( batch + 1 ))
+    [ "$batch" -ge 128 ] && { wait; batch=0; }
+  done
+  wait
+  sort -u "$hits" 2>/dev/null
+  rm -f "$hits"
+}
 
-ok="$(jq -r '.ok // false' <<<"$body" 2>/dev/null)"
-if [ "$ok" != "true" ]; then
-  err "device rejected the request: $body"
-  exit 1
-fi
+# Rewrites only IP=, so anything else bootstrap.sh may come to keep in here
+# survives. This is the only writer of the phone's IP.
+remember_ip() {
+  local ip="$1" tmp
+  grep -qxF "IP=$ip" "$CONFIG" 2>/dev/null && return 0
+  tmp="$(mktemp)"
+  { grep -v '^IP=' "$CONFIG" 2>/dev/null; printf 'IP=%s\n' "$ip"; } > "$tmp"
+  mv "$tmp" "$CONFIG"
+  chmod 600 "$CONFIG"
+  log "phone is at $ip now; updated $CONFIG"
+}
 
-granted="$(jq -r '.permissionGranted' <<<"$body")"
-if [ "$granted" != "true" ]; then
-  err "WRITE_SECURE_SETTINGS not granted on device; re-run tools/bootstrap.sh"
-  exit 1
-fi
+# 1 = could not reach this host, try another. 2 = it answered and said no, which
+# is a real fault (revoked permission, wrong token) that another IP cannot fix.
+enable_at() {
+  local ip="$1" response http_code body
+  response="$(curl -sS --max-time "$TIMEOUT" -w '\n%{http_code}' \
+    "http://$ip:$PORT/enable?token=$TOKEN" 2>&1)" || {
+    err "$ip: accepted the connection but sent no reply within ${TIMEOUT}s"
+    return 1
+  }
 
-port="$(jq -r '.port' <<<"$body")"
-if [ "$port" = "null" ] || [ -z "$port" ]; then
-  err "wireless debugging enabled but no port resolved yet: $body"
-  exit 1
-fi
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
 
-echo "$port"
+  # The phone bounds its own handler and says so rather than leaving us hanging,
+  # so 503 is a diagnosis, not a transport failure.
+  if [ "$http_code" = "503" ]; then
+    if [ "$(jq -r '.debuggingEnabled' <<<"$body" 2>/dev/null)" = "true" ]; then
+      err "$ip: debugging is on but the phone could not resolve its adb port in time"
+    else
+      err "$ip: the phone stalled writing adb_wifi_enabled and gave up"
+    fi
+    return 2
+  fi
+  if [ "$http_code" != "200" ]; then
+    err "HTTP $http_code from $ip: $body"; return 2
+  fi
+  if [ "$(jq -r '.ok // false' <<<"$body" 2>/dev/null)" != "true" ]; then
+    err "device at $ip rejected the request: $body"; return 2
+  fi
+  if [ "$(jq -r '.permissionGranted' <<<"$body")" != "true" ]; then
+    err "WRITE_SECURE_SETTINGS not granted on device; re-run tools/bootstrap.sh"; return 2
+  fi
+  local port; port="$(jq -r '.port' <<<"$body")"
+  if [ "$port" = "null" ] || [ -z "$port" ]; then
+    err "wireless debugging enabled but no port resolved yet: $body"; return 2
+  fi
+  printf '%s\n' "$port"
+}
+
+# The config IP is the last address that worked, so it is worth trying first and
+# worth nothing on a network the phone has never been on. Both are true at once,
+# which is why it is a hint here rather than the answer.
+tried=""
+try_ips() {
+  local ip port rc
+  for ip in "$@"; do
+    [ -n "$ip" ] || continue
+    case " $tried " in *" $ip "*) continue ;; esac
+    tried="$tried $ip"
+    port_open "$ip" || continue
+    port="$(enable_at "$ip")"; rc=$?
+    [ "$rc" -eq 2 ] && exit 1
+    if [ "$rc" -eq 0 ]; then
+      remember_ip "$ip"
+      printf '%s:%s\n' "$ip" "$port"
+      return 0
+    fi
+  done
+  return 1
+}
+
+hint="${1:-}"
+saved="$(sed -n 's/^IP=//p' "$CONFIG" 2>/dev/null | head -1)"
+
+try_ips "$hint" "$saved" && exit 0
+try_ips $(sweep_for_listener) && exit 0
+
+err "no ADB Connection Service answering on port $PORT anywhere on this LAN --"
+err "is the phone on this network, awake, with the app installed and running?"
+exit 1
