@@ -66,7 +66,7 @@ candidates() {
   while read -r ep; do
     [ -n "$ep" ] || continue
     if [ "$ep" != "${ep#*:}" ] && [ -n "$prefix" ] && [ "${ep%.*}" != "$prefix" ]; then
-      log "$ep — different subnet, skipping"
+      log "ignoring stale endpoint $ep — this LAN is ${prefix}.0/24"
       continue
     fi
     printf '%s\n' "$ep"
@@ -330,7 +330,10 @@ case "${1:-}" in
     timeout 12 "$ADB" mdns services 2>&1 >&2
     ;;
   "")
-    attach_persistent || { err "could not attach; wake the phone, or if that fails check the Wireless debugging screen and run: aconnect pair <ip:pairport> <code>"; exit 1; }
+    attach_persistent || { err "could not attach. Any endpoints skipped above are remembered from an old"
+    err "network and are NOT where the phone is now — its address is unknown, not"
+    err "elsewhere. Most often it is simply asleep: re-run. If it stays down, check"
+    err "the Wireless debugging screen and run: aconnect pair <ip:pairport> <code>"; exit 1; }
     ;;
   *)
     try_connect "$1" && land "$1" || { err "connect to $1 failed"; exit 1; }
