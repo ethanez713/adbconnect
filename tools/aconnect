@@ -56,21 +56,26 @@ save() {
     | awk 'NF && !seen[$0]++' | head -4 > "$tmp"
   mv "$tmp" "$STATE"
 }
-# Endpoints saved on another network are unroutable by inspection, and dialling
-# them anyway makes the log read "the phone is not answering" when the truth is
-# "that address is not on this LAN". An mDNS service name carries no address, so
-# it is never filtered out.
+# Order by likelihood, don't discard. An ip:port on a different /24 than this
+# laptop is a weaker bet, so it goes last — but a network that splits the phone
+# and PC across two subnets (a mesh, or a router handing out .0.x and .1.x that
+# still routes between them) puts the phone at exactly such an address, and
+# dropping it outright is what makes the log read "the phone is not on this
+# network" when it never got tried. try_connect probes an ip:port cheaply (a
+# 1.5s port_open) before dialling, so a genuinely unroutable one costs 1.5s, not
+# the 2-min adb-connect hang the old filter existed to avoid. Service names carry
+# no address, so they stay in original (most-recent-first) order.
 candidates() {
-  local prefix ep
+  local prefix ep deferred=""
   prefix="$(lan_prefix)"
   while read -r ep; do
     [ -n "$ep" ] || continue
     if [ "$ep" != "${ep#*:}" ] && [ -n "$prefix" ] && [ "${ep%.*}" != "$prefix" ]; then
-      log "ignoring stale endpoint $ep — this LAN is ${prefix}.0/24"
-      continue
+      deferred="$deferred $ep"; continue
     fi
     printf '%s\n' "$ep"
   done < <(cat "$STATE" 2>/dev/null)
+  for ep in $deferred; do printf '%s\n' "$ep"; done
 }
 
 # When adb finds the phone over mDNS it attaches under the service name rather
@@ -330,10 +335,13 @@ case "${1:-}" in
     timeout 12 "$ADB" mdns services 2>&1 >&2
     ;;
   "")
-    attach_persistent || { err "could not attach. Any endpoints skipped above are remembered from an old"
-    err "network and are NOT where the phone is now — its address is unknown, not"
-    err "elsewhere. Most often it is simply asleep: re-run. If it stays down, check"
-    err "the Wireless debugging screen and run: aconnect pair <ip:pairport> <code>"; exit 1; }
+    attach_persistent || { err "could not attach. Every subnet I know to try — this laptop's and the"
+    err "phone's remembered ones — was swept and nothing answered. Most often the"
+    err "phone is just asleep: re-run. If this network puts the phone and laptop on"
+    err "different subnets that don't route to each other (a guest/AP-isolated split),"
+    err "no sweep can reach it — put both on one subnet: turn on the phone's hotspot"
+    err "and join it, use USB, or a Tailscale tailnet. If debugging is off, check the"
+    err "Wireless debugging screen and run: aconnect pair <ip:pairport> <code>"; exit 1; }
     ;;
   *)
     try_connect "$1" && land "$1" || { err "connect to $1 failed"; exit 1; }

@@ -16,6 +16,7 @@
 set -uo pipefail
 
 CONFIG="$HOME/.config/adbconnect"
+DEVICE_STATE="$HOME/.config/android-device"
 TOKEN_FILE="$HOME/.config/adbconnect-token"
 PORT=47821
 TIMEOUT=15
@@ -43,26 +44,45 @@ lan_prefix() {
     | cut -d/ -f1 | sed 's/\.[0-9]*$//'
 }
 
+# Every dotted-quad the phone has ever been seen at: the saved hint, plus every
+# ip:port aconnect remembers. Service names (no colon) drop out. This is what
+# lets a sweep reach a phone the router has put on a different /24 than the PC.
+remembered_ips() {
+  { sed -n 's/^IP=//p' "$CONFIG" 2>/dev/null
+    sed -n 's/:.*//p' "$DEVICE_STATE" 2>/dev/null
+  } | grep -E '^[0-9]+(\.[0-9]+){3}$' | awk 'NF && !seen[$0]++'
+}
+
+# The /24s worth sweeping: this laptop's own, plus every one the phone has lived
+# on. On a single-/24 home network these collapse to one; on a network that
+# splits phone and PC across subnets, the phone's historical /24 is the one the
+# old single-subnet sweep could never see.
+sweep_prefixes() {
+  { lan_prefix; remembered_ips | sed 's/\.[0-9]*$//'; } | awk 'NF && !seen[$0]++'
+}
+
 # The listener's port is fixed and the service is always up, so the app is the
 # one thing on the phone that can be found by scanning. adbd cannot: wireless
 # debugging binds a random high port, and when it is off -- the case this whole
 # script exists for -- it binds nothing at all.
 sweep_for_listener() {
-  local prefix; prefix="$(lan_prefix)"
-  [ -n "$prefix" ] || { err "no default route; cannot work out which subnet to sweep"; return 1; }
-  log "sweeping ${prefix}.0/24 for the app's listener on $PORT"
+  local prefixes; prefixes="$(sweep_prefixes)"
+  [ -n "$prefixes" ] || { err "no default route and nothing remembered; no subnet to sweep"; return 1; }
   local hits; hits="$(mktemp)"
-  local i batch=0
-  for i in $(seq 1 254); do
-    # A sub-second timeout here silently misses the phone: Wi-Fi power-save
-    # delays its first SYN-ACK well past what a mains-powered host needs, so the
-    # one device the sweep exists to find is the one it drops. Cheap to be
-    # generous -- the whole subnet is probed in parallel, so this is the wall
-    # time of the sweep, not the per-host cost.
-    ( timeout "$PROBE_TIMEOUT" bash -c "exec 3<>/dev/tcp/${prefix}.${i}/${PORT}" 2>/dev/null \
-        && printf '%s\n' "${prefix}.${i}" >> "$hits" ) &
-    batch=$(( batch + 1 ))
-    [ "$batch" -ge 128 ] && { wait; batch=0; }
+  local prefix i batch=0
+  for prefix in $prefixes; do
+    log "sweeping ${prefix}.0/24 for the app's listener on $PORT"
+    for i in $(seq 1 254); do
+      # A sub-second timeout here silently misses the phone: Wi-Fi power-save
+      # delays its first SYN-ACK well past what a mains-powered host needs, so the
+      # one device the sweep exists to find is the one it drops. Cheap to be
+      # generous -- the whole subnet is probed in parallel, so this is the wall
+      # time of the sweep, not the per-host cost.
+      ( timeout "$PROBE_TIMEOUT" bash -c "exec 3<>/dev/tcp/${prefix}.${i}/${PORT}" 2>/dev/null \
+          && printf '%s\n' "${prefix}.${i}" >> "$hits" ) &
+      batch=$(( batch + 1 ))
+      [ "$batch" -ge 128 ] && { wait; batch=0; }
+    done
   done
   wait
   sort -u "$hits" 2>/dev/null
@@ -145,11 +165,15 @@ try_ips() {
 }
 
 hint="${1:-}"
-saved="$(sed -n 's/^IP=//p' "$CONFIG" 2>/dev/null | head -1)"
 
-try_ips "$hint" "$saved" && exit 0
+# Direct hits first — every remembered address, across all subnets, is a cheaper
+# bet than a 254-host sweep and catches the phone the instant it is back at one.
+try_ips "$hint" $(remembered_ips) && exit 0
 try_ips $(sweep_for_listener) && exit 0
 
-err "no ADB Connection Service answering on port $PORT anywhere on this LAN --"
-err "is the phone on this network, awake, with the app installed and running?"
+swept="$(sweep_prefixes | sed 's#$#.0/24#' | paste -sd' ' -)"
+err "no ADB Connection Service answering on port $PORT on any subnet I know to"
+err "try (swept: ${swept:-none}). If the phone is awake with the app running, it"
+err "is likely on a subnet this laptop cannot route to — a guest/AP-isolated"
+err "split. Put both on one subnet (phone hotspot, USB, or a Tailscale tailnet)."
 exit 1

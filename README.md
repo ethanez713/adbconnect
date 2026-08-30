@@ -27,8 +27,11 @@ endpoints → mDNS → `adbwake`, retried for 60s because a sleeping phone drops
 while its radio surfaces only periodically. `aconnect serial` prints the one transport to
 pass to `adb -s`.
 
-**`tools/adbwake`** — the rung that talks to the app. Locates the phone (saved IP as a hint,
-else sweeps the current subnet for port 47821), calls `/enable`, prints `ip:port`.
+**`tools/adbwake`** — the rung that talks to the app. Locates the phone (every remembered IP
+first, then a sweep of both this PC's subnet and every `/24` the phone has been seen on, for
+port 47821), calls `/enable`, prints `ip:port`. Sweeping the phone's historical subnets, not
+just the PC's, is what recovers a network that hands the phone and PC addresses on different
+`/24`s but still routes between them — a mesh or a main+guest split.
 
 **`tools/bootstrap.sh`** — one-shot setup, run while adb is already connected. Installs the
 APK, grants the permission, exempts the app from battery optimisation, pulls the auth token
@@ -61,6 +64,14 @@ taps it. That gesture is the dialog's entire purpose; no permission this app can
 dismiss it. A new network costs one tap, always. What the app does instead is say so — it
 answers `503` with `awaitingConsent: true` rather than going silent, and `adbwake` prints
 the tap it is waiting for.
+
+The other thing no LAN trick can fix is a network that puts the phone and PC on subnets that
+genuinely do not route to each other — a guest/AP-isolated Wi-Fi, or the phone on cellular
+while the PC is on Wi-Fi. Knowing the phone's IP does not help: the problem is reachability,
+not discovery, and nothing on the phone is reachable inbound. The sweep tries every `/24` the
+phone has lived on, so a *routable* split (mesh, main+guest) recovers unattended; a
+*non-routable* one needs the two put on one subnet — the phone's hotspot, USB, or a Tailscale
+tailnet — and `aconnect` now says so instead of claiming the phone's address is unknown.
 
 ## Security
 
