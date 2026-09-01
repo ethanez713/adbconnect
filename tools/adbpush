@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# adbpush — hand a new APK to the phone when adb cannot reach it but the app can.
+#
+# When wireless debugging is dead and cannot be revived from the PC (the phone is parked on the
+# once-per-network "Allow wireless debugging?" tap, say), `adb install` has no path in. The
+# adbconnect app's listener does: this uploads the APK to it, the app verifies the APK is a
+# same-signed update of itself and hands it to the system installer, and the phone ends up one
+# tap from the new build -- via a notification, or the "Install pushed update" button in the app.
+#
+# It does NOT install silently and cannot: the app holds no such power, by design. What it removes
+# is the "find the APK in Downloads and sideload it by hand" step, not the confirmation tap.
+#
+# Usage:
+#   adbpush <app.apk>            Locate the phone, upload, report
+#   adbpush <app.apk> <ip>       Try that IP first
+set -uo pipefail
+
+CONFIG="$HOME/.config/adbconnect"
+DEVICE_STATE="$HOME/.config/android-device"
+TOKEN_FILE="$HOME/.config/adbconnect-token"
+PORT=47821
+UPLOAD_TIMEOUT="${ADBPUSH_TIMEOUT:-60}"
+PROBE_TIMEOUT="${ADBWAKE_PROBE_TIMEOUT:-3}"
+
+log() { printf '>> %s\n' "$*" >&2; }
+err() { printf '!! %s\n' "$*" >&2; }
+
+APK="${1:-}"
+[ -n "$APK" ] || { err "usage: adbpush <app.apk> [ip]"; exit 1; }
+[ -f "$APK" ] || { err "$APK not found"; exit 1; }
+hint="${2:-}"
+
+[ -f "$TOKEN_FILE" ] || { err "no $TOKEN_FILE (run tools/bootstrap.sh first)"; exit 1; }
+TOKEN="$(<"$TOKEN_FILE")"
+[ -n "$TOKEN" ] || { err "$TOKEN_FILE is empty"; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# shellcheck source=lib/locate.sh
+source "$SCRIPT_DIR/lib/locate.sh"
+
+# 1 = could not reach this host, try another. 2 = it answered with a verdict another IP cannot
+# change (bad token, APK too large, signer mismatch) -- a real fault, so stop.
+push_to() {
+  local ip="$1" response http_code body
+  response="$(curl -sS --max-time "$UPLOAD_TIMEOUT" -w '\n%{http_code}' \
+    -X POST --data-binary @"$APK" \
+    -H 'Content-Type: application/vnd.android.package-archive' \
+    "http://$ip:$PORT/install?token=$TOKEN" 2>&1)" || {
+    err "$ip: connection dropped before the upload completed"
+    return 1
+  }
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+
+  case "$http_code" in
+    200)
+      local vname vcode
+      vname="$(jq -r '.versionName // "?"' <<<"$body" 2>/dev/null)"
+      vcode="$(jq -r '.versionCode // "?"' <<<"$body" 2>/dev/null)"
+      log "staged on $ip: version $vname ($vcode). Tap the phone's \"Update ready\""
+      log "notification, or the \"Install pushed update\" button in the app, to finish."
+      return 0
+      ;;
+    401) err "$ip rejected the token; re-run tools/bootstrap.sh"; return 2 ;;
+    413) err "$ip refused the APK as too large: $body"; return 2 ;;
+    400) err "$ip rejected the APK: $(jq -r '.error // empty' <<<"$body" 2>/dev/null || echo "$body")"; return 2 ;;
+    *)   err "HTTP $http_code from $ip: $body"; return 2 ;;
+  esac
+}
+
+tried=""
+try_ips() {
+  local ip rc
+  for ip in "$@"; do
+    [ -n "$ip" ] || continue
+    case " $tried " in *" $ip "*) continue ;; esac
+    tried="$tried $ip"
+    port_open "$ip" || continue
+    push_to "$ip"; rc=$?
+    [ "$rc" -eq 2 ] && exit 1
+    [ "$rc" -eq 0 ] && return 0
+  done
+  return 1
+}
+
+try_ips "$hint" $(remembered_ips) && exit 0
+try_ips $(sweep_for_listener) && exit 0
+
+swept="$(sweep_prefixes | sed 's#$#.0/24#' | paste -sd' ' -)"
+err "no ADB Connection Service answering on port $PORT on any subnet I know to try"
+err "(swept: ${swept:-none}). The phone is either off/asleep with no app running, or on"
+err "a subnet this laptop cannot route to. Nothing can be pushed until it is reachable."
+exit 1

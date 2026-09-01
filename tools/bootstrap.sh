@@ -24,6 +24,7 @@ log "linking tools into ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$PWD/tools/aconnect" "$HOME/.local/bin/aconnect"
 ln -sfn "$PWD/tools/adbwake" "$HOME/.local/bin/adbwake"
+ln -sfn "$PWD/tools/adbpush" "$HOME/.local/bin/adbpush"
 
 command -v adb >/dev/null || { err "adb not on PATH -- source ~/android-tooling/env.sh first"; exit 1; }
 
@@ -41,6 +42,15 @@ adb -s "$SERIAL" install -r "$APK"
 
 log "granting WRITE_SECURE_SETTINGS"
 adb -s "$SERIAL" shell pm grant "$APP_ID" android.permission.WRITE_SECURE_SETTINGS
+
+# The pushed-update notification is how adbpush surfaces its one-tap install, and the app
+# deliberately never asks for POST_NOTIFICATIONS at runtime (that is what keeps its own
+# foreground-service notice hidden). Granting it here restores both -- the update notification
+# shows, and the min-importance service notice reappears in the shade. The in-app "Install
+# pushed update" button works regardless, so this grant is a convenience, not a requirement.
+log "granting POST_NOTIFICATIONS (for pushed-update alerts)"
+adb -s "$SERIAL" shell pm grant "$APP_ID" android.permission.POST_NOTIFICATIONS || \
+  err "could not grant POST_NOTIFICATIONS; use the in-app Install button instead"
 
 # Doze would otherwise drop inbound packets to the listener once the phone has been
 # idle for a while -- the exact state the app exists to recover from. Doing it here
@@ -72,3 +82,4 @@ chmod 600 "$CONFIG_FILE"
 
 log "done: $CONFIG_FILE -> IP=$ip, token stashed in $TOKEN_FILE"
 log "test with: tools/adbwake  (or the installed ~/.local/bin/adbwake)"
+log "push a new build with adb unreachable: adbpush app/build/outputs/apk/debug/app-debug.apk"

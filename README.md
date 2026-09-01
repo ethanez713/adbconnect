@@ -15,12 +15,13 @@ port, `47821`. Foreground so Android will not kill the process; battery-optimisa
 so Doze does not drop inbound packets to it. It holds `WRITE_SECURE_SETTINGS`, which apps
 cannot request at runtime and can only be granted over a working adb connection — that
 grant is the entire reason the app exists, because it is what allows writing
-`Settings.Global.adb_wifi_enabled`. Two token-authenticated GET endpoints:
+`Settings.Global.adb_wifi_enabled`. Three token-authenticated endpoints:
 
 | | |
 |---|---|
-| `/status?token=…` | Is debugging on, which adb port, is the permission still granted |
-| `/enable?token=…` | Turn debugging on, report the resulting adb port |
+| `GET /status?token=…` | Is debugging on, which adb port, is the permission still granted |
+| `GET /enable?token=…` | Turn debugging on, report the resulting adb port |
+| `POST /install?token=…` | Accept an APK, install it as a same-signed update to itself (below) |
 
 **`tools/aconnect`** — the command you actually run. A ladder: already-attached → saved
 endpoints → mDNS → `adbwake`, retried for 60s because a sleeping phone drops inbound packets
@@ -32,6 +33,11 @@ first, then a sweep of both this PC's subnet and every `/24` the phone has been 
 port 47821), calls `/enable`, prints `ip:port`. Sweeping the phone's historical subnets, not
 just the PC's, is what recovers a network that hands the phone and PC addresses on different
 `/24`s but still routes between them — a mesh or a main+guest split.
+
+**`tools/adbpush`** — the update channel for when adb itself cannot be revived. It finds the
+app's listener the same way `adbwake` does (shared `tools/lib/locate.sh`), then `POST`s an APK to
+`/install`. The phone ends up one tap from the new build — a notification, or an in-app button —
+without ever needing a working adb connection. It cannot install silently; see below.
 
 **`tools/bootstrap.sh`** — one-shot setup, run while adb is already connected. Installs the
 APK, grants the permission, exempts the app from battery optimisation, pulls the auth token
@@ -75,7 +81,7 @@ tailnet — and `aconnect` now says so instead of claiming the phone's address i
 
 ## Security
 
-The listener is one TCP port on the LAN with two GET endpoints, both requiring a 128-bit
+The listener is one TCP port on the LAN with three endpoints, all requiring a 128-bit
 `SecureRandom` token generated on the device and readable only by the app.
 
 The reason the blast radius is small is that **enabling wireless debugging is not the same
@@ -90,6 +96,16 @@ Deliberate choices, not accidents:
 - **`/enable` is not a generic settings proxy.** The written key and value are hardcoded;
   no request parameter influences either. A general "write any secure setting" endpoint is
   what would turn `WRITE_SECURE_SETTINGS` into a real escalation surface.
+- **`/install` only ever installs a same-signed update of the app itself.** Accepting a pushed
+  executable is the one endpoint that could be a real escalation surface, and two things fence
+  it. First, signer pinning: the app installs the APK only if its signing certificate matches
+  the app's own — Android's installer enforces this for any update, and the app re-checks it
+  before the bytes reach the installer, so a token-holder cannot push arbitrary malware without
+  the signing key, only a genuine rebuild of *this* app. Second, the app **cannot install
+  silently** — it holds `REQUEST_INSTALL_PACKAGES`, not the system-only install permission, so
+  the system's install-confirm screen and the user's tap are unavoidable. The feature removes
+  the "sideload it by hand from Downloads" step, not the confirmation. The upload is size-capped
+  and streamed to disk, and like every other path cannot crash the listener.
 - **The service is `exported="false"`** — unreachable through Android IPC. The socket is the
   only way in. `BootReceiver` is exported because it must be, and `BOOT_COMPLETED` is a
   protected broadcast only the system can send.

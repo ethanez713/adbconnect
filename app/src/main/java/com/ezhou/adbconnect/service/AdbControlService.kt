@@ -18,9 +18,15 @@ import com.ezhou.adbconnect.R
 import com.ezhou.adbconnect.SecureSettingsWriter
 import com.ezhou.adbconnect.TokenStore
 import com.ezhou.adbconnect.net.findAdbTlsConnectPort
-import java.io.BufferedReader
+import com.ezhou.adbconnect.MAX_APK_BYTES
+import com.ezhou.adbconnect.StageOutcome
+import com.ezhou.adbconnect.stageAndPrompt
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
-import java.io.InputStreamReader
+import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -168,16 +174,15 @@ class AdbControlService : Service() {
     }
 }
 
+private val installInFlight = AtomicBoolean(false)
+
 private fun handleConnection(context: Context, socket: Socket) {
     socket.use { s ->
         try {
             s.soTimeout = 10_000
-            val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.US_ASCII))
-            val requestLine = reader.readLine() ?: return
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.isEmpty()) break
-            }
+            val input = BufferedInputStream(s.getInputStream())
+            val head = readRequestHead(input) ?: return
+            val requestLine = head.firstOrNull() ?: return
 
             val parts = requestLine.split(" ")
             if (parts.size < 2) {
@@ -191,7 +196,9 @@ private fun handleConnection(context: Context, socket: Socket) {
             val path = pathParts[0]
             val params = parseQuery(pathParts.getOrNull(1))
 
-            if (method != "GET" || (path != "/status" && path != "/enable")) {
+            val known = (method == "GET" && (path == "/status" || path == "/enable")) ||
+                (method == "POST" && path == "/install")
+            if (!known) {
                 writeResponse(s.getOutputStream(), 404, errorJson("not found"))
                 return
             }
@@ -200,6 +207,11 @@ private fun handleConnection(context: Context, socket: Socket) {
             if (token == null || !constantTimeEquals(token, TokenStore.getOrCreate(context))) {
                 Metrics.record(context, MetricEvent.AUTH_REJECTED)
                 writeResponse(s.getOutputStream(), 401, errorJson("bad token"))
+                return
+            }
+
+            if (path == "/install") {
+                handleInstall(context, s.getOutputStream(), input, head)
                 return
             }
 
@@ -240,6 +252,96 @@ private fun handleConnection(context: Context, socket: Socket) {
             Log.w(TAG, "request failed", e)
         }
     }
+}
+
+/**
+ * The one endpoint that takes a body: the PC streams an APK up when it cannot reach adb but can
+ * still reach this listener. Everything dangerous about accepting a pushed executable is fenced by
+ * [stageAndPrompt] -- the APK is only ever installed as a same-signed update to this package, and
+ * the user still taps to confirm. Here we only bound it (size, one at a time) and get the bytes to
+ * disk without letting a malformed or oversized upload take the process down.
+ */
+private fun handleInstall(context: Context, output: OutputStream, input: InputStream, head: List<String>) {
+    Metrics.record(context, MetricEvent.INSTALL_REMOTE)
+    val contentLength = head.drop(1)
+        .firstOrNull { it.startsWith("content-length:", ignoreCase = true) }
+        ?.substringAfter(':')?.trim()?.toLongOrNull()
+    if (contentLength == null || contentLength <= 0) {
+        writeResponse(output, 400, errorJson("missing or invalid Content-Length"))
+        return
+    }
+    if (contentLength > MAX_APK_BYTES) {
+        Metrics.record(context, MetricEvent.INSTALL_REJECTED)
+        writeResponse(output, 413, errorJson("APK exceeds ${MAX_APK_BYTES} bytes"))
+        return
+    }
+    if (!installInFlight.compareAndSet(false, true)) {
+        writeResponse(output, 503, errorJson("an install is already in progress"))
+        return
+    }
+    val upload = File(context.cacheDir, "upload.apk")
+    try {
+        readBodyToFile(input, upload, contentLength)
+        when (val outcome = stageAndPrompt(context, upload)) {
+            is StageOutcome.Ok -> writeResponse(output, 200, JSONObject().apply {
+                put("ok", true)
+                put("staged", true)
+                put("pendingUserAction", true)
+                put("versionCode", outcome.versionCode)
+                put("versionName", outcome.versionName ?: JSONObject.NULL)
+                put("model", Build.MODEL)
+            })
+            is StageOutcome.Rejected -> {
+                Metrics.record(context, MetricEvent.INSTALL_REJECTED)
+                writeResponse(output, 400, errorJson(outcome.reason))
+            }
+        }
+    } catch (e: IOException) {
+        Metrics.record(context, MetricEvent.INSTALL_REJECTED)
+        writeResponse(output, 400, errorJson("upload failed: ${e.message}"))
+    } finally {
+        upload.delete()
+        installInFlight.set(false)
+    }
+}
+
+/** Reads exactly [length] bytes -- the client's declared Content-Length -- into [dest], streamed so
+ * a large APK never sits in memory. A stream that ends early is a truncated upload, not a short APK. */
+private fun readBodyToFile(input: InputStream, dest: File, length: Long) {
+    val buffer = ByteArray(8192)
+    var remaining = length
+    FileOutputStream(dest).use { out ->
+        while (remaining > 0) {
+            val want = minOf(buffer.size.toLong(), remaining).toInt()
+            val read = input.read(buffer, 0, want)
+            if (read == -1) throw IOException("stream ended ${remaining} bytes short of Content-Length")
+            out.write(buffer, 0, read)
+            remaining -= read
+        }
+    }
+}
+
+/** Request line plus header lines, read straight off the socket as bytes and stopped at the blank
+ * line. A [BufferedReader] cannot do this job: it reads ahead past the header, swallowing the APK
+ * bytes of a POST body into its char buffer where the raw stream can no longer reach them. */
+private const val MAX_HEAD_BYTES = 16 * 1024
+
+private fun readRequestHead(input: InputStream): List<String>? {
+    val buf = ByteArrayOutputStream()
+    var crlfState = 0 // advances through \r \n \r \n; 4 = blank line reached
+    while (true) {
+        val c = input.read()
+        if (c == -1) return null
+        buf.write(c)
+        if (buf.size() > MAX_HEAD_BYTES) return null
+        crlfState = when (c) {
+            '\r'.code -> if (crlfState == 2) 3 else 1
+            '\n'.code -> if (crlfState == 1) 2 else if (crlfState == 3) 4 else 0
+            else -> 0
+        }
+        if (crlfState == 4) break
+    }
+    return buf.toString("US-ASCII").split("\r\n").filter { it.isNotEmpty() }
 }
 
 /**

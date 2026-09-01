@@ -33,6 +33,11 @@
         android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- Lets the app hand a pushed APK to the system installer when adb is unreachable. It only
+         ever installs a same-signed update to itself, and the user still taps to confirm; this
+         permission does not grant silent install. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -64,6 +69,14 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Local HTTP endpoint that re-enables Android Wireless debugging on request from a script on the paired PC" />
         </service>
+
+        <!--
+          exported="false": only PackageInstaller, targeting it by explicit component, delivers the
+          session outcome here. Nothing else on the device has any reason to reach it.
+        -->
+        <receiver
+            android:name=".service.InstallResultReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".service.BootReceiver"

@@ -1,4 +1,7 @@
 <resources>
     <string name="app_name">ADB Connection Service</string>
     <string name="notification_channel_name">ADB Connection Service</string>
+    <string name="update_channel_name">App updates</string>
+    <string name="update_ready_title">Update ready</string>
+    <string name="update_ready_text">A new build was pushed over the LAN. Tap to install.</string>
 </resources>

@@ -1,7 +1,12 @@
 package com.ezhou.adbconnect.ui
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageInstaller
+import android.app.PendingIntent
+import android.os.Build
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
@@ -38,7 +43,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.ezhou.adbconnect.EventCount
@@ -46,6 +53,9 @@ import com.ezhou.adbconnect.MetricEvent
 import com.ezhou.adbconnect.Metrics
 import com.ezhou.adbconnect.MetricsSnapshot
 import com.ezhou.adbconnect.TokenStore
+import com.ezhou.adbconnect.clearStagedUpdateIfInstalled
+import com.ezhou.adbconnect.commitStagedUpdate
+import com.ezhou.adbconnect.pendingUpdateFile
 import com.ezhou.adbconnect.service.AdbControlService
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -60,7 +70,26 @@ import kotlinx.coroutines.withContext
 private const val GRANT_COMMAND =
     "adb shell pm grant com.ezhou.adbconnect android.permission.WRITE_SECURE_SETTINGS"
 
+private const val SESSION_RESULT_ACTION = "com.ezhou.adbconnect.SESSION_RESULT"
+
 class MainActivity : ComponentActivity() {
+
+    // The in-app fallback for when the pushed-update notification never shows -- notifications for
+    // this app are off by default. Committing the staged APK reports back here; being foreground,
+    // this activity may launch the system confirm screen directly, which the background notification
+    // receiver cannot.
+    private val sessionResult = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+                == PackageInstaller.STATUS_PENDING_USER_ACTION
+            ) {
+                IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java)
+                    ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    ?.let { startActivity(it) }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -70,6 +99,15 @@ class MainActivity : ComponentActivity() {
         // relying on the user to separately know the service needs kicking off.
         ContextCompat.startForegroundService(this, Intent(this, AdbControlService::class.java))
 
+        ContextCompat.registerReceiver(
+            this,
+            sessionResult,
+            IntentFilter(SESSION_RESULT_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+
+        lifecycleScope.launch(Dispatchers.IO) { clearStagedUpdateIfInstalled(applicationContext) }
+
         if (savedInstanceState == null) {
             Metrics.record(applicationContext, MetricEvent.APP_OPEN)
         }
@@ -77,10 +115,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             AdbConnectTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    AdbConnectScreen()
+                    AdbConnectScreen(onInstallUpdate = ::installStagedUpdate)
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        unregisterReceiver(sessionResult)
+        super.onDestroy()
+    }
+
+    private fun installStagedUpdate() {
+        var flags = PendingIntent.FLAG_UPDATE_CURRENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags = flags or PendingIntent.FLAG_MUTABLE
+        val sender = PendingIntent.getBroadcast(
+            this, 0, Intent(SESSION_RESULT_ACTION).setPackage(packageName), flags,
+        )
+        commitStagedUpdate(this, sender.intentSender)
     }
 }
 
@@ -94,10 +146,11 @@ private data class UiState(
     val busy: Boolean = false,
     val lastError: String? = null,
     val metrics: MetricsSnapshot? = null,
+    val pendingUpdate: Boolean = false,
 )
 
 @Composable
-private fun AdbConnectScreen() {
+private fun AdbConnectScreen(onInstallUpdate: () -> Unit) {
     val context = LocalContext.current
     var state by remember { mutableStateOf(UiState(token = TokenStore.getOrCreate(context))) }
     val scope = rememberCoroutineScope()
@@ -120,6 +173,7 @@ private fun AdbConnectScreen() {
                     port = if (status.isNull("port")) null else status.optInt("port"),
                     dozeExempt = isIgnoringBatteryOptimizations(context),
                     metrics = metricsSnapshot,
+                    pendingUpdate = pendingUpdateFile(context).exists(),
                 )
                 delay(3000)
             }
@@ -157,6 +211,15 @@ private fun AdbConnectScreen() {
         }
 
         state.metrics?.let { UsageSection(it) }
+
+        if (state.pendingUpdate) {
+            Text(
+                "A new build has been pushed to this phone. If no notification appeared, install it " +
+                    "here.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(onClick = onInstallUpdate) { Text("Install pushed update") }
+        }
 
         if (!state.permissionGranted) {
             Text(

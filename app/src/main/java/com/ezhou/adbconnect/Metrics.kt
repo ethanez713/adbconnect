@@ -30,6 +30,12 @@ enum class MetricEvent(val id: String, val label: String, val breaksDownEnable: 
     SERVICE_BOOT_START("service.boot_start", "Boot restarts"),
     SERVICE_BIND_FAILED("service.bind_failed", "Port bind failures"),
     AUTH_REJECTED("auth.rejected", "Rejected (bad token)"),
+    INSTALL_REMOTE("install.remote", "APK pushes (LAN)"),
+    INSTALL_REJECTED("install.rejected", "Rejected (bad APK)"),
+    INSTALL_STAGED("install.staged", "Staged, awaiting tap"),
+    INSTALL_SUCCESS("install.success", "Installed"),
+    INSTALL_FAILED("install.failed", "Install failed"),
+
     REQUEST_STALLED("request.stalled", "Requests that timed out"),
 }
 
