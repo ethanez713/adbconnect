@@ -298,12 +298,20 @@ wake() {
 # a bash /dev/tcp loop spends its whole time forking two processes per port and
 # takes minutes; python threads the connects and clears a live host in a few
 # seconds. So the scan rung needs python3 and is skipped without it.
+#
+# host_reachable only proves the phone answered one probe. Wi-Fi power-save can
+# put it back to sleep before the scan finishes, and a sleeping host drops SYNs
+# instead of RSTing them, so every remaining port then costs a full connect
+# timeout — 28k of them at ~55s, inside a ladder that retries every 5s. So the
+# scan is bounded by a wall-clock budget, and streams each open port as it lands
+# rather than sorting at the end, so hitting the budget never discards a port
+# already found.
 scan_ports() {
   local ip="$1" lo="${ACONNECT_PORTSCAN_LO:-32768}" hi="${ACONNECT_PORTSCAN_HI:-60999}"
-  python3 - "$ip" "$lo" "$hi" "${ACONNECT_PORTSCAN_TIMEOUT:-1.0}" <<'PY'
+  python3 - "$ip" "$lo" "$hi" "${ACONNECT_PORTSCAN_TIMEOUT:-1.0}" "${ACONNECT_PORTSCAN_BUDGET:-8}" <<'PY'
 import sys, socket
-from concurrent.futures import ThreadPoolExecutor
-ip, lo, hi, t = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+from concurrent.futures import ThreadPoolExecutor, as_completed
+ip, lo, hi, t, budget = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
 def probe(p):
     with socket.socket() as s:
         s.settimeout(t)
@@ -312,8 +320,17 @@ def probe(p):
         except OSError:
             return None
 with ThreadPoolExecutor(max_workers=512) as ex:
-    for p in sorted(r for r in ex.map(probe, range(lo, hi + 1)) if r):
-        print(p)
+    futures = [ex.submit(probe, p) for p in range(lo, hi + 1)]
+    try:
+        for f in as_completed(futures, timeout=budget):
+            p = f.result()
+            if p:
+                print(p, flush=True)
+    except TimeoutError:
+        pass
+    finally:
+        for f in futures:
+            f.cancel()
 PY
 }
 
