@@ -14,6 +14,7 @@ import com.ezhou.adbconnect.Metrics
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import kotlin.concurrent.thread
 
 private const val TAG = "KeepAliveJob"
 private const val JOB_ID = 4787
@@ -33,9 +34,17 @@ private const val INTERVAL_MS = 15 * 60 * 1000L
  * service already depends on.
  */
 class KeepAliveJob : JobService() {
+    // onStartJob runs on the main thread, and the socket probe blocks -- doing it here throws
+    // NetworkOnMainThreadException. Hand it to a background thread and report done via jobFinished.
     override fun onStartJob(params: JobParameters?): Boolean {
-        ensureServiceRunning(applicationContext)
-        return false
+        thread(name = "adbconnect-keepalive", isDaemon = true) {
+            try {
+                ensureServiceRunning(applicationContext)
+            } finally {
+                jobFinished(params, false)
+            }
+        }
+        return true
     }
 
     override fun onStopJob(params: JobParameters?): Boolean = false
