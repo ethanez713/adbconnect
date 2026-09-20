@@ -13,6 +13,14 @@
 #   VM and `adb mdns services` returns an empty list with no error, which looks
 #   exactly like "no phone on the network".
 #
+#   Rotated-port scan — when a remembered IP is still reachable but its saved
+#   port is closed, the phone has almost always just rotated its connect port
+#   rather than left the network. The IP is known; only the port is lost. mDNS is
+#   meant to recover that port and often can't (above), so scan the ephemeral
+#   range on that one host and let adb's TLS handshake reject any open port that
+#   is not an adb endpoint. This is the "known IP, unknown port" case, which is
+#   the common one whenever mDNS is dark — not the debugging-off case.
+#
 #   Pinning to 5555 — after the first attach, `adb tcpip 5555` restarts adbd on
 #   the fixed legacy port, so subsequent attaches need no discovery at all. This
 #   survives until the phone reboots. Still RSA-authenticated, but not TLS; set
@@ -90,6 +98,16 @@ port_open() {
   local hp="$1"
   timeout "${ACONNECT_PROBE_TIMEOUT:-1.5}" \
     bash -c "exec 3<>/dev/tcp/${hp%%:*}/${hp##*:}" 2>/dev/null
+}
+
+# A closed port on a live host RSTs at once; an absent or AP-isolated host makes
+# the connect hang until the timeout fires (exit 124). So a *fast* failure means
+# the host is there — which is exactly the go/no-go a port scan needs, since
+# scanning a host that only times out would burn one full timeout per port.
+host_reachable() {
+  timeout "${ACONNECT_PROBE_TIMEOUT:-1.5}" \
+    bash -c "exec 3<>/dev/tcp/${1}/${2}" 2>/dev/null
+  [ "$?" -ne 124 ]
 }
 
 # The probe is not just an optimisation: `adb connect` to an unroutable host
@@ -274,6 +292,61 @@ wake() {
   return 1
 }
 
+# adb binds the wireless-debugging connect port in the Linux ephemeral range
+# (/proc/sys/net/ipv4/ip_local_port_range defaults to 32768-60999 on Android).
+# Closed ports RST instantly on a real LAN, so the range is quick to sweep — but
+# a bash /dev/tcp loop spends its whole time forking two processes per port and
+# takes minutes; python threads the connects and clears a live host in a few
+# seconds. So the scan rung needs python3 and is skipped without it.
+scan_ports() {
+  local ip="$1" lo="${ACONNECT_PORTSCAN_LO:-32768}" hi="${ACONNECT_PORTSCAN_HI:-60999}"
+  python3 - "$ip" "$lo" "$hi" "${ACONNECT_PORTSCAN_TIMEOUT:-1.0}" <<'PY'
+import sys, socket
+from concurrent.futures import ThreadPoolExecutor
+ip, lo, hi, t = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+def probe(p):
+    with socket.socket() as s:
+        s.settimeout(t)
+        try:
+            return p if s.connect_ex((ip, p)) == 0 else None
+        except OSError:
+            return None
+with ThreadPoolExecutor(max_workers=512) as ex:
+    for p in sorted(r for r in ex.map(probe, range(lo, hi + 1)) if r):
+        print(p)
+PY
+}
+
+# The dotted-quad IPs aconnect remembers, newest first, deduped. Service names
+# (no colon, no address) drop out.
+known_ips() {
+  sed -n 's/:.*//p' "$STATE" 2>/dev/null \
+    | grep -E '^[0-9]+(\.[0-9]+){3}$' | awk 'NF && !seen[$0]++'
+}
+
+# The rung the reported incident had no equivalent of: a remembered IP that is
+# still up but whose saved port is closed is a phone that rotated its port, not
+# one that left. Runs after wake() so the debugging-off case (which wake fixes on
+# the fixed app port) never triggers a scan, and gated on host_reachable so a
+# sleeping or unroutable host is skipped cheaply instead of scanned to death.
+scan_known_hosts() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  local ip port
+  while read -r ip; do
+    [ -n "$ip" ] || continue
+    port="$(sed -n "s/^${ip//./\\.}://p" "$STATE" 2>/dev/null | head -1)"
+    host_reachable "$ip" "${port:-$PIN_PORT}" || continue
+    log "$ip is up but its saved port is closed — scanning it for the rotated adb port"
+    while read -r port; do
+      [ -n "$port" ] || continue
+      if try_connect "${ip}:${port}"; then
+        log "recovered rotated port at ${ip}:${port}"; land "${ip}:${port}"; return 0
+      fi
+    done < <(scan_ports "$ip")
+  done < <(known_ips)
+  return 1
+}
+
 # A sleeping phone drops inbound packets, but its radio surfaces periodically —
 # measured going from every port closed to answering on its own in ~13s with
 # nothing prompting it. So the ladder is worth repeating for a while before
@@ -286,6 +359,10 @@ attach_persistent() {
     # together the moment Android switches wireless debugging off — and waiting
     # out the retry window first only delays the one rung that can fix it.
     wake && return 0
+    # Last, because it is the fallback for when wake could not help: debugging is
+    # on (so wake found nothing to re-enable) but the port rotated and mDNS is
+    # dark. Placing it after wake keeps the debugging-off case off the scanner.
+    scan_known_hosts && return 0
     [ "$(date +%s)" -ge "$deadline" ] && break
     log "not reachable yet — retrying until $(date -d "@$deadline" +%H:%M:%S)"
     sleep 5
@@ -335,13 +412,14 @@ case "${1:-}" in
     timeout 12 "$ADB" mdns services 2>&1 >&2
     ;;
   "")
-    attach_persistent || { err "could not attach. Every subnet I know to try — this laptop's and the"
-    err "phone's remembered ones — was swept and nothing answered. Most often the"
-    err "phone is just asleep: re-run. If this network puts the phone and laptop on"
-    err "different subnets that don't route to each other (a guest/AP-isolated split),"
-    err "no sweep can reach it — put both on one subnet: turn on the phone's hotspot"
-    err "and join it, use USB, or a Tailscale tailnet. If debugging is off, check the"
-    err "Wireless debugging screen and run: aconnect pair <ip:pairport> <code>"; exit 1; }
+    attach_persistent || { err "could not attach. I tried every saved endpoint, mDNS, waking the phone"
+    err "via the app, and a port scan of every remembered IP that was reachable —"
+    err "nothing answered. Most often the phone is just asleep: re-run. If debugging"
+    err "is off, check the Wireless debugging screen and run:"
+    err "  aconnect pair <ip:pairport> <code>"
+    err "If this network puts the phone and laptop on subnets that don't route to each"
+    err "other (a guest/AP-isolated split), nothing here can reach it — put both on one"
+    err "subnet: the phone's hotspot, USB, or a Tailscale tailnet."; exit 1; }
     ;;
   *)
     try_connect "$1" && land "$1" || { err "connect to $1 failed"; exit 1; }

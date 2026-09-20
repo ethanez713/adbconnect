@@ -24,9 +24,11 @@ grant is the entire reason the app exists, because it is what allows writing
 | `POST /install?token=…` | Accept an APK, install it as a same-signed update to itself (below) |
 
 **`tools/aconnect`** — the command you actually run. A ladder: already-attached → saved
-endpoints → mDNS → `adbwake`, retried for 60s because a sleeping phone drops inbound packets
-while its radio surfaces only periodically. `aconnect serial` prints the one transport to
-pass to `adb -s`.
+endpoints → mDNS → `adbwake` → a rotated-port scan of any remembered IP still reachable,
+retried for 60s because a sleeping phone drops inbound packets while its radio surfaces only
+periodically. The scan is the "known IP, rotated port" recovery for when mDNS is dark (its
+usual state under WSL) and debugging is still on, so `adbwake` finds nothing to re-enable; it
+needs `python3`. `aconnect serial` prints the one transport to pass to `adb -s`.
 
 **`tools/adbwake`** — the rung that talks to the app. Locates the phone (every remembered IP
 first, then a sweep of both this PC's subnet and every `/24` the phone has been seen on, for
