@@ -28,6 +28,7 @@ enum class MetricEvent(val id: String, val label: String, val breaksDownEnable: 
     ENABLE_DENIED("enable.denied", "permission not granted", breaksDownEnable = true),
     SERVICE_START("service.start", "Service starts"),
     SERVICE_BOOT_START("service.boot_start", "Boot restarts"),
+    SERVICE_KEEPALIVE_RESTART("service.keepalive_restart", "Keepalive restarts"),
     SERVICE_BIND_FAILED("service.bind_failed", "Port bind failures"),
     AUTH_REJECTED("auth.rejected", "Rejected (bad token)"),
     INSTALL_REMOTE("install.remote", "APK pushes (LAN)"),

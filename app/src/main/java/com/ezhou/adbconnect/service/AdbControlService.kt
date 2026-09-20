@@ -71,6 +71,7 @@ class AdbControlService : Service() {
         startForegroundNotification()
         Metrics.record(applicationContext, MetricEvent.SERVICE_START)
         startServer()
+        KeepAliveJob.schedule(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY

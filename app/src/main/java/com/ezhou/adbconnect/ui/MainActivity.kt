@@ -57,9 +57,7 @@ import com.ezhou.adbconnect.clearStagedUpdateIfInstalled
 import com.ezhou.adbconnect.commitStagedUpdate
 import com.ezhou.adbconnect.pendingUpdateFile
 import com.ezhou.adbconnect.service.AdbControlService
-import java.io.IOException
-import java.net.InetSocketAddress
-import java.net.Socket
+import com.ezhou.adbconnect.service.isAdbServiceListening
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import kotlinx.coroutines.Dispatchers
@@ -163,7 +161,7 @@ private fun AdbConnectScreen(onInstallUpdate: () -> Unit) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 val (serviceRunning, metricsSnapshot) = withContext(Dispatchers.IO) {
-                    isServiceListening() to Metrics.snapshot(context)
+                    isAdbServiceListening() to Metrics.snapshot(context)
                 }
                 val status = AdbControlService.currentStatus(context, resolvePort = false)
                 state = state.copy(
@@ -367,12 +365,3 @@ private fun batteryOptimizationSettingsIntent(context: Context): Intent {
     }
 }
 
-private fun isServiceListening(): Boolean =
-    try {
-        Socket().use {
-            it.connect(InetSocketAddress("127.0.0.1", AdbControlService.LISTEN_PORT), 500)
-            true
-        }
-    } catch (e: IOException) {
-        false
-    }

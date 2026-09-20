@@ -78,6 +78,15 @@
             android:name=".service.InstallResultReceiver"
             android:exported="false" />
 
+        <!--
+          Restarts the service if Android has reclaimed its process while the phone sat idle.
+          BIND_JOB_SERVICE is required so only the system JobScheduler can bind it.
+        -->
+        <service
+            android:name=".service.KeepAliveJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <receiver
             android:name=".service.BootReceiver"
             android:exported="true">
