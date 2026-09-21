@@ -24,10 +24,9 @@ class InstallResultReceiver : BroadcastReceiver() {
                     ?: return
                 postInstallPrompt(context.applicationContext, confirm)
             }
-            PackageInstaller.STATUS_SUCCESS -> {
-                Metrics.record(context.applicationContext, MetricEvent.INSTALL_SUCCESS)
-                pendingUpdateFile(context.applicationContext).delete()
-            }
+            // STATUS_SUCCESS is not handled here: a self-update kills the process before it can be
+            // delivered, so INSTALL_SUCCESS is counted on the next launch by clearStagedUpdateIfInstalled.
+            PackageInstaller.STATUS_SUCCESS -> pendingUpdateFile(context.applicationContext).delete()
             else -> Metrics.record(context.applicationContext, MetricEvent.INSTALL_FAILED)
         }
     }

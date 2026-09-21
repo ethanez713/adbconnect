@@ -161,12 +161,17 @@ fun postInstallPrompt(context: Context, confirm: Intent) {
  * versionCode never moves between rebuilds -- so the honest test of "already installed" is that the
  * running APK's bytes equal the staged ones. Called on launch; a no-op in the normal case where
  * nothing is staged.
+ *
+ * This is also where INSTALL_SUCCESS is counted: committing a self-update kills the process before
+ * PackageInstaller's STATUS_SUCCESS can reach a receiver, so the byte match on the next launch is
+ * the only reliable evidence the update landed. Deleting the staged file makes it a one-time count.
  */
 fun clearStagedUpdateIfInstalled(context: Context) {
     val staged = pendingUpdateFile(context)
     if (!staged.exists()) return
     val running = File(context.applicationInfo.sourceDir)
     if (running.exists() && staged.length() == running.length() && sha256(staged) == sha256(running)) {
+        Metrics.record(context, MetricEvent.INSTALL_SUCCESS)
         staged.delete()
     }
 }
