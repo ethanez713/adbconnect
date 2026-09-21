@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
+import com.ezhou.adbconnect.MetricEvent
+import com.ezhou.adbconnect.Metrics
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -25,8 +27,12 @@ private const val NO_PORT = -1
  * call into the system's NSD daemon and is not guaranteed to return; wrapping it in
  * `withTimeoutOrNull` bought nothing, because cancelling a coroutine cannot unblock a thread
  * stuck below it -- only declining to wait for that thread can.
+ *
+ * The default window is sized to sit just inside the service's per-request response budget: adbd
+ * can take several seconds to start advertising after a fresh flip, so a shorter window returns
+ * null on a phone that would have resolved given another second or two.
  */
-suspend fun findAdbTlsConnectPort(context: Context, timeoutMs: Long = 8000): Int? {
+suspend fun findAdbTlsConnectPort(context: Context, timeoutMs: Long = 11_000): Int? {
     val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return null
     val found = ArrayBlockingQueue<Int>(1)
 
@@ -42,6 +48,7 @@ suspend fun findAdbTlsConnectPort(context: Context, timeoutMs: Long = 8000): Int
         val resolveListener = object : NsdManager.ResolveListener {
             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                 Log.w(TAG, "resolve failed for ${serviceInfo.serviceName}: $errorCode")
+                Metrics.record(context, MetricEvent.ENABLE_RESOLVE_FAILED)
             }
 
             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {

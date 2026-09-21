@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -44,8 +45,9 @@ private const val TAG = "AdbControlService"
 private const val CHANNEL_ID = "adbconnect_service"
 private const val NOTIFICATION_ID = 1
 
-/** Comfortably past the port finder's own 8s budget, and inside the 15s the caller allows. */
-private const val RESPONSE_BUDGET_MS = 12_000L
+/** Two seconds past the port finder's window, so a full-length resolve still returns before the
+ * 15s the caller allows. */
+private const val RESPONSE_BUDGET_MS = 13_000L
 
 private val enableInFlight = AtomicBoolean(false)
 
@@ -137,7 +139,7 @@ class AdbControlService : Service() {
         const val LISTEN_PORT = 47821
 
         /** Read-only status. Port resolution is skipped when debugging is already off -- there is
-         * nothing to find, so scanning for up to 8s would only be a needless delay. */
+         * nothing to find, so running the finder's full window would only be a needless delay. */
         suspend fun currentStatus(context: Context, resolvePort: Boolean): JSONObject {
             val granted = SecureSettingsWriter.isPermissionGranted(context)
             val enabled = SecureSettingsWriter.isWirelessDebuggingEnabled(context)
@@ -157,10 +159,24 @@ class AdbControlService : Service() {
             val wasEnabled = SecureSettingsWriter.isWirelessDebuggingEnabled(context)
             Metrics.record(context, if (wasEnabled) MetricEvent.ENABLE_ALREADY_ON else MetricEvent.ENABLE_FLIPPED)
             SecureSettingsWriter.enableWirelessDebugging(context)
+            val startedAt = SystemClock.elapsedRealtime()
             val port = findAdbTlsConnectPort(context)
-            Metrics.record(context, if (port != null) MetricEvent.ENABLE_PORT_FOUND else MetricEvent.ENABLE_PORT_TIMEOUT)
+            val resolveMs = SystemClock.elapsedRealtime() - startedAt
+            if (port != null) {
+                Metrics.record(context, MetricEvent.ENABLE_PORT_FOUND)
+                Metrics.record(context, resolveLatencyBucket(resolveMs))
+            } else {
+                Metrics.record(context, MetricEvent.ENABLE_PORT_TIMEOUT)
+            }
             val enabled = SecureSettingsWriter.isWirelessDebuggingEnabled(context)
             return statusJson(enabled, port, true)
+        }
+
+        private fun resolveLatencyBucket(ms: Long): MetricEvent = when {
+            ms < 2_000 -> MetricEvent.ENABLE_PORT_LT2S
+            ms < 4_000 -> MetricEvent.ENABLE_PORT_LT4S
+            ms < 8_000 -> MetricEvent.ENABLE_PORT_LT8S
+            else -> MetricEvent.ENABLE_PORT_GTE8S
         }
 
         private fun statusJson(enabled: Boolean, port: Int?, granted: Boolean): JSONObject =
