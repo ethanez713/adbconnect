@@ -17,6 +17,7 @@ import com.ezhou.adbconnect.MetricEvent
 import com.ezhou.adbconnect.Metrics
 import com.ezhou.adbconnect.R
 import com.ezhou.adbconnect.SecureSettingsWriter
+import com.ezhou.adbconnect.StayAwake
 import com.ezhou.adbconnect.TokenStore
 import com.ezhou.adbconnect.net.findAdbTlsConnectPort
 import com.ezhou.adbconnect.MAX_APK_BYTES
@@ -74,6 +75,7 @@ class AdbControlService : Service() {
         Metrics.record(applicationContext, MetricEvent.SERVICE_START)
         startServer()
         KeepAliveJob.schedule(applicationContext)
+        StayAwake.reconcile(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -234,6 +236,7 @@ private fun handleConnection(context: Context, socket: Socket) {
 
             val body = if (path == "/enable") {
                 Metrics.record(context, MetricEvent.ENABLE_REMOTE)
+                StayAwake.touch(context)
                 // A write parked on the consent dialog stays parked until it is tapped, so a
                 // caller that retries would only stack up threads waiting on the same tap and
                 // pay the full budget each time to learn nothing new.

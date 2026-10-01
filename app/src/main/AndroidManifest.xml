@@ -33,6 +33,13 @@
         android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- Lights a dark screen when the PC pings, so Wi-Fi is fully awake and the keyguard timer
+         restarts. TURN_SCREEN_ON is an appop that only `adb shell appops set` can grant. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission
+        android:name="android.permission.TURN_SCREEN_ON"
+        tools:ignore="ProtectedPermissions" />
+
     <!-- Lets the app hand a pushed APK to the system installer when adb is unreachable. It only
          ever installs a same-signed update to itself, and the user still taps to confirm; this
          permission does not grant silent install. -->
@@ -86,6 +93,20 @@
             android:name=".service.KeepAliveJob"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!--
+          Exported, but a sender must hold DUMP: shell does and no third-party app can, so only adb
+          can ping it. All it does is write one hardcoded setting.
+        -->
+        <receiver
+            android:name=".service.AwakeReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
+        <!-- An alarm outlives the process, so the window still ends if Android reclaims it. -->
+        <receiver
+            android:name=".service.AwakeExpiryReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".service.BootReceiver"

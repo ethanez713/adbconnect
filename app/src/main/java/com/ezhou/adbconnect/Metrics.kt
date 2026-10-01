@@ -42,6 +42,10 @@ enum class MetricEvent(val id: String, val label: String, val breaksDownEnable: 
     INSTALL_SUCCESS("install.success", "Installed"),
     INSTALL_FAILED("install.failed", "Install failed"),
 
+    AWAKE_PING("awake.ping", "Keep-awake pings"),
+    AWAKE_WAKE_IGNORED("awake.wake_ignored", "screen stayed dark after wake", breaksDownEnable = true),
+    AWAKE_USER_OVERRIDE("awake.user_override", "setting changed mid-window", breaksDownEnable = true),
+
     REQUEST_STALLED("request.stalled", "Requests that timed out"),
 }
 

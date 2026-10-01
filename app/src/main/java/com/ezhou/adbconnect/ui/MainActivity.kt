@@ -26,8 +26,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +38,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -52,12 +55,15 @@ import com.ezhou.adbconnect.EventCount
 import com.ezhou.adbconnect.MetricEvent
 import com.ezhou.adbconnect.Metrics
 import com.ezhou.adbconnect.MetricsSnapshot
+import com.ezhou.adbconnect.StayAwake
 import com.ezhou.adbconnect.TokenStore
 import com.ezhou.adbconnect.clearStagedUpdateIfInstalled
 import com.ezhou.adbconnect.commitStagedUpdate
 import com.ezhou.adbconnect.pendingUpdateFile
 import com.ezhou.adbconnect.service.AdbControlService
 import com.ezhou.adbconnect.service.isAdbServiceListening
+import java.time.Instant
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import kotlinx.coroutines.Dispatchers
@@ -145,6 +151,10 @@ private data class UiState(
     val lastError: String? = null,
     val metrics: MetricsSnapshot? = null,
     val pendingUpdate: Boolean = false,
+    val awakeEnabled: Boolean = true,
+    val awakeWindowMinutes: Int = 30,
+    val awakeDeadlineMs: Long? = null,
+    val wakePermissionGranted: Boolean = false,
 )
 
 @Composable
@@ -172,6 +182,10 @@ private fun AdbConnectScreen(onInstallUpdate: () -> Unit) {
                     dozeExempt = isIgnoringBatteryOptimizations(context),
                     metrics = metricsSnapshot,
                     pendingUpdate = pendingUpdateFile(context).exists(),
+                    awakeEnabled = StayAwake.isEnabled(context),
+                    awakeWindowMinutes = StayAwake.windowMinutes(context),
+                    awakeDeadlineMs = StayAwake.deadlineMs(context),
+                    wakePermissionGranted = StayAwake.isWakePermissionGranted(context),
                 )
                 delay(3000)
             }
@@ -207,6 +221,21 @@ private fun AdbConnectScreen(onInstallUpdate: () -> Unit) {
                 Text("Exempt from battery optimisation")
             }
         }
+
+        KeepAwakeSection(
+            enabled = state.awakeEnabled,
+            windowMinutes = state.awakeWindowMinutes,
+            deadlineMs = state.awakeDeadlineMs,
+            wakePermissionGranted = state.wakePermissionGranted,
+            onEnabledChange = {
+                StayAwake.setEnabled(context, it)
+                state = state.copy(awakeEnabled = it, awakeDeadlineMs = StayAwake.deadlineMs(context))
+            },
+            onWindowChange = {
+                StayAwake.setWindowMinutes(context, it)
+                state = state.copy(awakeWindowMinutes = it)
+            },
+        )
 
         state.metrics?.let { UsageSection(it) }
 
@@ -252,6 +281,47 @@ private fun AdbConnectScreen(onInstallUpdate: () -> Unit) {
 
         state.lastError?.let {
             Text(it, color = MaterialTheme.colorScheme.error)
+        }
+    }
+}
+
+private val awakeWindowChoices = listOf(15, 30, 60, 120)
+private val clockFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+@Composable
+private fun KeepAwakeSection(
+    enabled: Boolean,
+    windowMinutes: Int,
+    deadlineMs: Long?,
+    wakePermissionGranted: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onWindowChange: (Int) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Keep awake during adb sessions", style = MaterialTheme.typography.titleSmall)
+            Switch(checked = enabled, onCheckedChange = onEnabledChange)
+        }
+        if (enabled) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                awakeWindowChoices.forEach { minutes ->
+                    FilterChip(
+                        selected = minutes == windowMinutes,
+                        onClick = { onWindowChange(minutes) },
+                        label = { Text(if (minutes < 60) "$minutes min" else "${minutes / 60} h") },
+                    )
+                }
+            }
+            StatusRow(
+                "Stay awake while charging",
+                deadlineMs?.let { "until ${Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).format(clockFormatter)}" }
+                    ?: "idle",
+            )
+            StatusRow("Wake screen permission", if (wakePermissionGranted) "granted" else "no — run bootstrap.sh")
         }
     }
 }
