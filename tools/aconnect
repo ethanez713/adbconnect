@@ -494,6 +494,23 @@ serial_for() {
   return 1
 }
 
+AWAKE_STAMP_DIR="$HOME/.cache/aconnect"
+AWAKE_THROTTLE_SECS=60
+
+# Tells the app a session is in progress, which lights a dark screen and holds it on while
+# charging. Throttled because `aconnect serial` runs before every adb call, and detached with every
+# fd closed because the caller captures stdout with $(...) and would otherwise wait on the child.
+ping_awake() {
+  local stamp="$AWAKE_STAMP_DIR/awake-$1"
+  mkdir -p "$AWAKE_STAMP_DIR"
+  if [ -f "$stamp" ] && [ $(( $(date +%s) - $(stat -c %Y "$stamp") )) -lt "$AWAKE_THROTTLE_SECS" ]; then
+    return 0
+  fi
+  touch "$stamp"
+  ( timeout 15 "$ADB" -s "$1" shell am broadcast -n com.ezhou.adbconnect/.service.AwakeReceiver \
+      </dev/null >/dev/null 2>&1 & )
+}
+
 devices_report() {
   local name serial allow t access
   printf '%-8s %-13s %-8s %-22s %s\n' NAME SERIAL ACCESS PROJECTS TRANSPORT
@@ -546,11 +563,14 @@ case "${1:-}" in
     # "more than one device/emulator" as soon as both are.
     timeout 20 "$ADB" start-server >/dev/null 2>&1
     dedupe
-    if [ -n "$(registry)" ]; then serial_for "${2:-}"; exit $?; fi
-    ep="$(attached_endpoint)"
-    [ -n "$ep" ] || { err "no phone attached; run: aconnect"; exit 1; }
-    printf '%s\n' "$ep"
-    exit 0
+    if [ -n "$(registry)" ]; then
+      ep="$(serial_for "${2:-}")"; rc=$?
+    else
+      ep="$(attached_endpoint)"; rc=0
+      [ -n "$ep" ] || { err "no phone attached; run: aconnect"; rc=1; }
+    fi
+    [ "$rc" -eq 0 ] && { printf '%s\n' "$ep"; ping_awake "$ep"; }
+    exit "$rc"
     ;;
   status)
     log "known endpoints: $(candidates | paste -sd' ' || echo none)"
@@ -566,6 +586,9 @@ case "${1:-}" in
     err "If this network puts the phone and laptop on subnets that don't route to each"
     err "other (a guest/AP-isolated split), nothing here can reach it — put both on one"
     err "subnet: the phone's hotspot, USB, or a Tailscale tailnet."; exit 1; }
+    dedupe
+    ep="$(if [ -n "$(registry)" ]; then serial_for 2>/dev/null; else attached_endpoint; fi)"
+    [ -n "$ep" ] && ping_awake "$ep"
     ;;
   *)
     try_connect "$1" && land "$1" || { err "connect to $1 failed"; exit 1; }
