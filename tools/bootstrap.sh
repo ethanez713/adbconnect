@@ -59,9 +59,10 @@ log "exempting from battery optimisation"
 adb -s "$SERIAL" shell dumpsys deviceidle whitelist "+$APP_ID" >/dev/null
 
 # TURN_SCREEN_ON is an appop, not a runtime permission: it has no prompt and only this
-# command grants it. Without it a ping cannot light a dark screen.
+# command grants it, by its string name because the shell name differs across Android versions.
+# Without it a ping cannot light a dark screen.
 log "granting TURN_SCREEN_ON (wake the screen on adb activity)"
-adb -s "$SERIAL" shell appops set "$APP_ID" TURN_SCREEN_ON allow
+adb -s "$SERIAL" shell appops set "$APP_ID" android:turn_screen_on allow
 
 # A 512 KiB crash buffer scrolls in minutes, and a crash scan after the fact then finds nothing. Samsung caps every buffer at 5 MiB and the shell cannot set
 # the persistent property, so this lasts until the next reboot; rerun bootstrap after one.
