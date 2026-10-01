@@ -41,6 +41,13 @@ app's listener the same way `adbwake` does (shared `tools/lib/locate.sh`), then 
 `/install`. The phone ends up one tap from the new build — a notification, or an in-app button —
 without ever needing a working adb connection. It cannot install silently; see below.
 
+**Keep-awake window** (`StayAwake.kt`) — a screen that sleeps mid-session locks the keyguard and
+idles Wi-Fi, which is when adb stops answering. `aconnect serial` and a successful `aconnect`
+ping the app, which lights a dark screen and holds Developer options' *Stay awake* on for a
+sliding window (default 30 min, set in the app); every ping pushes the deadline out. Charging
+only, because that setting is a no-op on battery. The app owns the setting while the feature is
+on and clears it at expiry unless something else changed it first.
+
 **`tools/bootstrap.sh`** — one-shot setup, run while adb is already connected. Installs the
 APK, grants the permission, exempts the app from battery optimisation, pulls the auth token
 off the device, and symlinks both tools into `~/.local/bin`.
@@ -52,6 +59,7 @@ off the device, and symlinks both tools into `~/.local/bin`.
 | `~/.config/android-device` | Recent endpoints, most-recent-first |
 | `~/.config/adbconnect` | Phone IP — a hint only; `adbwake` rewrites it |
 | `~/.config/adbconnect-token` | Auth token, `0600` |
+| `~/.cache/aconnect/awake-*` | Per-transport stamp that throttles the keep-awake ping to one a minute |
 | `~/.config/adbconnect-devices` | Phone registry: `<name> <ro.serialno> [project ...]`, first line is the default |
 
 ## Several phones
@@ -72,6 +80,10 @@ source ~/android-tooling/env.sh     # JDK 17 + Gradle + SDK adb (v37) on PATH
 ./gradlew assembleDebug
 tools/bootstrap.sh                  # while adb is connected
 ```
+
+One manual step, because no adb command sets it: Battery → Background usage limits → **Never
+sleeping apps** → add ADB Connection Service. A deep-sleeping app receives no jobs or alarms, so
+`KeepAliveJob` cannot revive it.
 
 Thereafter, `aconnect`. Allow it up to 90s — the rungs that fix things are the slow ones at
 the end, and cutting it short kills it before they run.
@@ -120,6 +132,8 @@ Deliberate choices, not accidents:
   the system's install-confirm screen and the user's tap are unavoidable. The feature removes
   the "sideload it by hand from Downloads" step, not the confirmation. The upload is size-capped
   and streamed to disk, and like every other path cannot crash the listener.
+- **`AwakeReceiver` is exported but gated on `DUMP`**, which `shell` holds and no third-party app
+  can, so only adb can ping it. Like `/enable`, it writes one hardcoded setting.
 - **The service is `exported="false"`** — unreachable through Android IPC. The socket is the
   only way in. `BootReceiver` is exported because it must be, and `BOOT_COMPLETED` is a
   protected broadcast only the system can send.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tools/bootstrap.sh — one-shot setup, run while adb IS connected to the phone.
 #
-# Installs the APK, grants WRITE_SECURE_SETTINGS (only possible over an adb
+# Installs the APK, grants WRITE_SECURE_SETTINGS and TURN_SCREEN_ON (only possible over an adb
 # connection that already works), starts the app so its foreground service is
 # live, and pulls the auth token off the device so tools/adbwake never needs
 # the user to type or copy it by hand.
@@ -58,6 +58,16 @@ adb -s "$SERIAL" shell pm grant "$APP_ID" android.permission.POST_NOTIFICATIONS 
 log "exempting from battery optimisation"
 adb -s "$SERIAL" shell dumpsys deviceidle whitelist "+$APP_ID" >/dev/null
 
+# TURN_SCREEN_ON is an appop, not a runtime permission: it has no prompt and only this
+# command grants it. Without it a ping cannot light a dark screen.
+log "granting TURN_SCREEN_ON (wake the screen on adb activity)"
+adb -s "$SERIAL" shell appops set "$APP_ID" TURN_SCREEN_ON allow
+
+# A 512 KiB crash buffer scrolls in minutes, and a crash scan after the fact then finds nothing. Samsung caps every buffer at 5 MiB and the shell cannot set
+# the persistent property, so this lasts until the next reboot; rerun bootstrap after one.
+log "raising logcat buffers to 5 MiB (until reboot)"
+adb -s "$SERIAL" shell logcat -G 5M >/dev/null || err "could not resize the logcat buffers"
+
 log "starting the app"
 adb -s "$SERIAL" shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 >/dev/null
 
@@ -81,5 +91,6 @@ printf 'IP=%s\n' "$ip" > "$CONFIG_FILE"
 chmod 600 "$CONFIG_FILE"
 
 log "done: $CONFIG_FILE -> IP=$ip, token stashed in $TOKEN_FILE"
+log "manual, once: Settings > Battery > Background usage limits > Never sleeping apps > add ADB Connection Service"
 log "test with: tools/adbwake  (or the installed ~/.local/bin/adbwake)"
 log "push a new build with adb unreachable: adbpush app/build/outputs/apk/debug/app-debug.apk"
