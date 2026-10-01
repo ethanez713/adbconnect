@@ -52,6 +52,18 @@ off the device, and symlinks both tools into `~/.local/bin`.
 | `~/.config/android-device` | Recent endpoints, most-recent-first |
 | `~/.config/adbconnect` | Phone IP — a hint only; `adbwake` rewrites it |
 | `~/.config/adbconnect-token` | Auth token, `0600` |
+| `~/.config/adbconnect-devices` | Phone registry: `<name> <ro.serialno> [project ...]`, first line is the default |
+
+## Several phones
+
+The registry ranks the phones attached to this PC. The first line is the default: the attach
+ladder only counts a connection to it as success, and a bare `aconnect serial` returns it. A
+phone with projects after its serial is reserved for those projects — a project is the repo's
+directory name, or `$ACONNECT_PROJECT` — and `aconnect serial` never returns a reserved phone
+to anyone else (`aconnect serial <name>` exits 3). A phone with no projects is open to all.
+`aconnect devices` shows who may use what. Callers pass `"$(aconnect serial)"` to `adb -s`
+rather than choosing a transport themselves; that is the only thing keeping a reserved phone
+clean. Only the default phone is remembered in `~/.config/android-device`.
 
 ## Setup
 

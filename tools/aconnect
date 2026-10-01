@@ -39,7 +39,15 @@
 #   aconnect pair <ip:pairport> <code> <ip:connectport>
 #   aconnect scan                         Force a LAN sweep for port 5555
 #   aconnect status                       Show what is currently attached
-#   aconnect serial                       Print the one transport to pass to `adb -s`
+#   aconnect serial [name]                Print the one transport to pass to `adb -s`
+#   aconnect devices                      List registered phones and who may use them
+#
+# Several phones can be attached at once, so `~/.config/adbconnect-devices` ranks
+# them: one line per phone, `<name> <ro.serialno> [project ...]`. The first line
+# is the default phone, which is what the attach ladder and a bare `aconnect
+# serial` target. A phone with projects after its serial is reserved for those
+# projects (the repo directory name, or $ACONNECT_PROJECT); one without is open to
+# everything. Without the file nothing is ranked or reserved.
 set -uo pipefail
 
 ADB="$HOME/Android/Sdk/platform-tools/adb"
@@ -47,6 +55,7 @@ ADB="$HOME/Android/Sdk/platform-tools/adb"
 [ -n "$ADB" ] || { echo "!! no adb on PATH" >&2; exit 1; }
 
 STATE="$HOME/.config/android-device"
+DEVICES="$HOME/.config/adbconnect-devices"
 PIN_PORT=5555
 mkdir -p "$(dirname "$STATE")"
 
@@ -54,11 +63,64 @@ mkdir -p "$(dirname "$STATE")"
 log() { printf '>> %s\n' "$*" >&2; }
 err() { printf '!! %s\n' "$*" >&2; }
 
+registry() { grep -vE '^[[:space:]]*(#|$)' "$DEVICES" 2>/dev/null; }
+default_name() { registry | awk 'NR==1 {print $1}'; }
+default_serialno() { registry | awk 'NR==1 {print $2}'; }
+registered_serialno() { registry | awk -v n="$1" '$1==n {print $2}'; }
+allowlist() {
+  registry | awk -v n="$1" '$1==n {for (i=3; i<=NF; i++) printf "%s%s", $i, (i<NF ? " " : "")}'
+}
+
+project_name() {
+  [ -n "${ACONNECT_PROJECT:-}" ] && { printf '%s\n' "$ACONNECT_PROJECT"; return; }
+  basename "$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+}
+
+device_allowed() {
+  local allow; allow="$(allowlist "$1")"
+  [ -z "$allow" ] && return 0
+  case " $allow " in *" $(project_name) "*) return 0 ;; esac
+  return 1
+}
+
+attached_transports() { "$ADB" devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}'; }
+
+# A service-name transport carries the serial in its name; an ip:port needs a
+# round-trip. </dev/null because adb shell would otherwise drain the stdin of any
+# `while read` loop this is called from.
+transport_serialno() {
+  case "$1" in
+    *._adb-tls-connect._tcp)
+      local s="${1%._adb-tls-connect._tcp}"; s="${s#adb-}"; printf '%s\n' "${s%-*}" ;;
+    *)
+      timeout 10 "$ADB" -s "$1" shell getprop ro.serialno </dev/null 2>/dev/null | tr -d '\r' ;;
+  esac
+}
+
+# The service-name transport wins over an ip:port twin, as in dedupe: it
+# re-resolves the randomised port by itself.
+transport_for() {
+  local t found=""
+  while read -r t; do
+    [ -n "$t" ] || continue
+    [ "$(transport_serialno "$t")" = "$1" ] || continue
+    case "$t" in *._adb-tls-connect._tcp) printf '%s\n' "$t"; return 0 ;; esac
+    [ -n "$found" ] || found="$t"
+  done < <(attached_transports)
+  [ -n "$found" ] && printf '%s\n' "$found"
+}
+
+is_default_endpoint() {
+  local d; d="$(default_serialno)"
+  [ -z "$d" ] || [ "$(transport_serialno "$1")" = "$d" ]
+}
+
 # A most-recent-first list, not a single value. The phone's mDNS advert goes
 # quiet while its port stays open, so the last known ip:port has to survive
 # alongside the service name rather than being overwritten by it — otherwise
 # the only address that still works is the one thing we no longer remember.
 save() {
+  is_default_endpoint "$1" || return 0
   local tmp; tmp="$(mktemp)"
   { printf '%s\n' "$1"; cat "$STATE" 2>/dev/null; } \
     | awk 'NF && !seen[$0]++' | head -4 > "$tmp"
@@ -89,6 +151,8 @@ candidates() {
 # When adb finds the phone over mDNS it attaches under the service name rather
 # than an ip:port, so matching only ip:port misses a device that is already up.
 attached_endpoint() {
+  local d; d="$(default_serialno)"
+  [ -n "$d" ] && { transport_for "$d"; return; }
   "$ADB" devices 2>/dev/null \
     | awk '$2=="device" && ($1 ~ /^[0-9]+(\.[0-9]+){3}:[0-9]+$/ ||
                             $1 ~ /_adb-tls-connect\._tcp$/) {print $1; exit}'
@@ -125,6 +189,19 @@ try_connect() {
   timeout 15 "$ADB" connect "$1" 2>&1 | grep -qiE '^(connected|already connected) to'
 }
 
+# try_connect alone reports success for any phone that answers, which with two
+# phones attached lets the ladder stop at the one that is not the default.
+connect_default() {
+  try_connect "$1" || return 1
+  [ -n "$(default_serialno)" ] || return 0
+  local n
+  for n in 1 2 3; do
+    [ -n "$(attached_endpoint)" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
 # Polls, because `adb mdns services` answers immediately from a cache that is
 # still empty for a second or two after the adb server starts. A single call in
 # a fresh session therefore reports "no device" for a phone that is sitting
@@ -134,7 +211,10 @@ discover() {
   local deadline=$(( $(date +%s) + ${ACONNECT_DISCOVER_SECS:-12} ))
   while :; do
     out="$(timeout 5 "$ADB" mdns services 2>/dev/null \
-           | awk -v s="$svc" '$2 ~ s {print $3; exit}')"
+           | awk -v s="$svc" -v d="$(default_serialno)" '
+               $2 ~ s { if (!first) first = $3
+                        if (d != "" && !pref && index($1, "adb-" d "-") == 1) pref = $3 }
+               END { print (pref ? pref : first) }')"
     [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
     [ "$(date +%s)" -ge "$deadline" ] && return 1
     sleep 1
@@ -239,23 +319,24 @@ await_attached() {
 # transport because it re-resolves the randomised port by itself.
 dedupe() {
   local svc svc_serial s serial
-  svc="$("$ADB" devices 2>/dev/null \
-        | awk 'NR>1 && $2=="device" && $1 ~ /_adb-tls-connect\._tcp$/ {print $1; exit}')"
-  [ -n "$svc" ] || return 0
-  svc_serial="$(timeout 10 "$ADB" -s "$svc" shell getprop ro.serialno 2>/dev/null | tr -d '\r')"
-  [ -n "$svc_serial" ] || return 0
-  for s in $("$ADB" devices 2>/dev/null \
-             | awk 'NR>1 && $2=="device" && $1 ~ /^[0-9]+(\.[0-9]+){3}:[0-9]+$/ {print $1}'); do
-    serial="$(timeout 10 "$ADB" -s "$s" shell getprop ro.serialno 2>/dev/null | tr -d '\r')"
-    if [ "$serial" = "$svc_serial" ]; then
-      log "dropping duplicate transport $s (same phone as $svc)"
-      "$ADB" disconnect "$s" >/dev/null 2>&1
-    fi
+  local ips; ips="$("$ADB" devices 2>/dev/null \
+        | awk 'NR>1 && $2=="device" && $1 ~ /^[0-9]+(\.[0-9]+){3}:[0-9]+$/ {print $1}')"
+  for svc in $("$ADB" devices 2>/dev/null \
+               | awk 'NR>1 && $2=="device" && $1 ~ /_adb-tls-connect\._tcp$/ {print $1}'); do
+    svc_serial="$(transport_serialno "$svc")"
+    [ -n "$svc_serial" ] || continue
+    for s in $ips; do
+      serial="$(transport_serialno "$s")"
+      if [ "$serial" = "$svc_serial" ]; then
+        log "dropping duplicate transport $s (same phone as $svc)"
+        "$ADB" disconnect "$s" >/dev/null 2>&1
+      fi
+    done
+    # Remember the transport that survived, not the one just dropped — otherwise
+    # the next run reconnects the dead ip:port and recreates the duplicate. The
+    # service name is the better thing to keep anyway: it outlives port rotation.
+    save "$svc"
   done
-  # Remember the transport that survived, not the one just dropped — otherwise
-  # the next run reconnects the dead ip:port and recreates the duplicate. The
-  # service name is the better thing to keep anyway: it outlives port rotation.
-  save "$svc"
 }
 
 attach() {
@@ -266,7 +347,7 @@ attach() {
 
   while read -r ep; do
     [ -n "$ep" ] || continue
-    if try_connect "$ep"; then
+    if connect_default "$ep"; then
       log "reattached known endpoint $ep"; land "$ep"; return 0
     fi
   done < <(candidates)
@@ -274,7 +355,7 @@ attach() {
   ep="$(discover)"
   if [ -n "$ep" ]; then
     log "mDNS found $ep"
-    if try_connect "$ep"; then land "$ep"; return 0; fi
+    if connect_default "$ep"; then land "$ep"; return 0; fi
   else
     log "mDNS found nothing — check WSL mirrored networking and that Wireless"
     log "debugging is ON (Android turns it off on reboot and on Wi-Fi change)"
@@ -288,7 +369,7 @@ wake() {
   local ep
   ep="$(adbwake)" || return 1
   log "phone re-enabled debugging at $ep"
-  try_connect "$ep" && { land "$ep"; return 0; }
+  connect_default "$ep" && { land "$ep"; return 0; }
   return 1
 }
 
@@ -356,7 +437,7 @@ scan_known_hosts() {
     log "$ip is up but its saved port is closed — scanning it for the rotated adb port"
     while read -r port; do
       [ -n "$port" ] || continue
-      if try_connect "${ip}:${port}"; then
+      if connect_default "${ip}:${port}"; then
         log "recovered rotated port at ${ip}:${port}"; land "${ip}:${port}"; return 0
       fi
     done < <(scan_ports "$ip")
@@ -387,6 +468,49 @@ attach_persistent() {
   return 1
 }
 
+# Exit 2 unknown name, 3 reserved for other projects, 1 not attached.
+serial_for() {
+  local want="${1:-}" name serial t
+  if [ -n "$want" ]; then
+    serial="$(registered_serialno "$want")"
+    [ -n "$serial" ] || { err "unknown device '$want'; see: aconnect devices"; return 2; }
+    device_allowed "$want" \
+      || { err "$want is reserved for: $(allowlist "$want") (this is $(project_name))"; return 3; }
+    t="$(transport_for "$serial")"
+    [ -n "$t" ] || { err "$want is not attached; attach it with: aconnect <ip:port>"; return 1; }
+    printf '%s\n' "$t"; return 0
+  fi
+  while read -r name serial _; do
+    device_allowed "$name" || continue
+    t="$(transport_for "$serial")"
+    [ -n "$t" ] && { printf '%s\n' "$t"; return 0; }
+  done <<<"$(registry)"
+  while read -r t; do
+    [ -n "$t" ] || continue
+    registry | awk -v s="$(transport_serialno "$t")" '$2==s {f=1} END {exit !f}' && continue
+    printf '%s\n' "$t"; return 0
+  done < <(attached_transports)
+  err "default phone $(default_name) is not attached; run: aconnect"
+  return 1
+}
+
+devices_report() {
+  local name serial allow t access
+  printf '%-8s %-13s %-8s %-22s %s\n' NAME SERIAL ACCESS PROJECTS TRANSPORT
+  while read -r name serial allow; do
+    [ -n "$name" ] || continue
+    device_allowed "$name" && access=allowed || access=denied
+    printf '%-8s %-13s %-8s %-22s %s\n' "$name" "$serial" "$access" "${allow:-any}" \
+      "$(transport_for "$serial" || true)"
+  done <<<"$(registry)"
+  while read -r t; do
+    [ -n "$t" ] || continue
+    serial="$(transport_serialno "$t")"
+    registry | awk -v s="$serial" '$2==s {f=1} END {exit !f}' && continue
+    printf '%-8s %-13s %-8s %-22s %s\n' '-' "$serial" allowed any "$t"
+  done < <(attached_transports)
+}
+
 case "${1:-}" in
   pair)
     [ $# -ge 3 ] || { err "usage: aconnect pair <ip:pairport> <code> [ip:connectport]"; exit 2; }
@@ -410,6 +534,10 @@ case "${1:-}" in
     ep="$(sweep)" && [ -n "$ep" ] && try_connect "$ep" && save "$ep" \
       || { err "no device answering on port $PIN_PORT"; exit 1; }
     ;;
+  devices)
+    devices_report
+    exit 0
+    ;;
   serial)
     # adb re-adds the mDNS twin at any point in a session, so the duplicate that
     # dedupe collapsed at attach time is usually back by the time a later command
@@ -418,6 +546,7 @@ case "${1:-}" in
     # "more than one device/emulator" as soon as both are.
     timeout 20 "$ADB" start-server >/dev/null 2>&1
     dedupe
+    if [ -n "$(registry)" ]; then serial_for "${2:-}"; exit $?; fi
     ep="$(attached_endpoint)"
     [ -n "$ep" ] || { err "no phone attached; run: aconnect"; exit 1; }
     printf '%s\n' "$ep"
