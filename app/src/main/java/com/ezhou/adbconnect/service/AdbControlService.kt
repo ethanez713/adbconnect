@@ -44,7 +44,13 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 
 private const val TAG = "AdbControlService"
-private const val CHANNEL_ID = "adbconnect_service"
+// The service notice is hidden by its channel, not by withholding POST_NOTIFICATIONS: One UI refuses
+// ACQUIRE_CAUSES_WAKEUP from any app whose notifications are blocked ("Screen on NOT allowed for
+// notification blocked apps"), so StayAwake's wake needs the permission granted. A channel created
+// at IMPORTANCE_NONE starts out blocked; channel importance is frozen once created, so the hidden
+// channel needs its own id and the visible legacy one is deleted.
+private const val CHANNEL_ID = "adbconnect_service_hidden"
+private const val LEGACY_CHANNEL_ID = "adbconnect_service"
 private const val NOTIFICATION_ID = 1
 
 /** Two seconds past the port finder's window, so a full-length resolve still returns before the
@@ -97,10 +103,11 @@ class AdbControlService : Service() {
     private fun startForegroundNotification() {
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.notification_channel_name),
-                NotificationManager.IMPORTANCE_MIN,
+                NotificationManager.IMPORTANCE_NONE,
             )
             manager.createNotificationChannel(channel)
         }

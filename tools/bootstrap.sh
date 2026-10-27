@@ -43,14 +43,13 @@ adb -s "$SERIAL" install -r "$APK"
 log "granting WRITE_SECURE_SETTINGS"
 adb -s "$SERIAL" shell pm grant "$APP_ID" android.permission.WRITE_SECURE_SETTINGS
 
-# The pushed-update notification is how adbpush surfaces its one-tap install, and the app
-# deliberately never asks for POST_NOTIFICATIONS at runtime (that is what keeps its own
-# foreground-service notice hidden). Granting it here restores both -- the update notification
-# shows, and the min-importance service notice reappears in the shade. The in-app "Install
-# pushed update" button works regardless, so this grant is a convenience, not a requirement.
-log "granting POST_NOTIFICATIONS (for pushed-update alerts)"
+# Required, not a convenience: One UI refuses to let an app with notifications blocked wake the
+# screen, so without this the keep-awake ping never lights a dark phone. It also shows adbpush's
+# one-tap update notification. The service's own notice stays hidden -- its channel is created
+# blocked. Turning the app's notifications off in Settings undoes this; re-run bootstrap.
+log "granting POST_NOTIFICATIONS (screen wake + pushed-update alerts)"
 adb -s "$SERIAL" shell pm grant "$APP_ID" android.permission.POST_NOTIFICATIONS || \
-  err "could not grant POST_NOTIFICATIONS; use the in-app Install button instead"
+  err "could not grant POST_NOTIFICATIONS; the keep-awake ping will not wake the screen"
 
 # Doze would otherwise drop inbound packets to the listener once the phone has been
 # idle for a while -- the exact state the app exists to recover from. Doing it here

@@ -16,11 +16,9 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <!-- Declared but deliberately never requested at runtime. startForeground() demands a
-         Notification object, but the system only displays it when the user permits notifications,
-         and a permanently ungranted permission is the only way an app can decline its own
-         foreground-service notice. The service is unaffected; it shows up under Active apps
-         instead. Granting this in Settings turns the notification back on with no rebuild. -->
+    <!-- Granted by bootstrap.sh, never requested at runtime. It must stay granted: One UI only
+         lets an app with notifications enabled wake the screen. The foreground-service notice
+         stays out of sight because its channel is created blocked (AdbControlService). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Restarts AdbControlService after a reboot. Wireless debugging is exactly what a reboot
