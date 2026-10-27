@@ -39,6 +39,7 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 
@@ -49,6 +50,13 @@ private const val NOTIFICATION_ID = 1
 /** Two seconds past the port finder's window, so a full-length resolve still returns before the
  * 15s the caller allows. */
 private const val RESPONSE_BUDGET_MS = 13_000L
+
+/** A live adbd that is already advertising resolves in well under 2s (most `enable.port_lt2s`), so
+ * 3s tells a working listener from a dead one before paying for a restart. The three phases must
+ * sum to less than [RESPONSE_BUDGET_MS]. */
+private const val ALREADY_ON_PROBE_MS = 3_000L
+private const val RESTART_GAP_MS = 1_000L
+private const val RESTART_RESOLVE_MS = 8_000L
 
 private val enableInFlight = AtomicBoolean(false)
 
@@ -160,9 +168,26 @@ class AdbControlService : Service() {
             }
             val wasEnabled = SecureSettingsWriter.isWirelessDebuggingEnabled(context)
             Metrics.record(context, if (wasEnabled) MetricEvent.ENABLE_ALREADY_ON else MetricEvent.ENABLE_FLIPPED)
-            SecureSettingsWriter.enableWirelessDebugging(context)
             val startedAt = SystemClock.elapsedRealtime()
-            val port = findAdbTlsConnectPort(context)
+            var port: Int?
+            if (wasEnabled) {
+                port = findAdbTlsConnectPort(context, ALREADY_ON_PROBE_MS)
+                if (port == null) {
+                    // The setting can read on while adbd has no TLS listener -- Settings shows the
+                    // address field as unavailable. Writing 1 over 1 fires no change, so the system
+                    // never restarts adbd; only an off/on edge does, same as the toggle in Settings.
+                    Metrics.record(context, MetricEvent.ENABLE_RESTARTED)
+                    SecureSettingsWriter.disableWirelessDebugging(context)
+                    // Both writes land on the same system handler; without a gap the off edge can be
+                    // coalesced away before adbd is ever torn down.
+                    delay(RESTART_GAP_MS)
+                    SecureSettingsWriter.enableWirelessDebugging(context)
+                    port = findAdbTlsConnectPort(context, RESTART_RESOLVE_MS)
+                }
+            } else {
+                SecureSettingsWriter.enableWirelessDebugging(context)
+                port = findAdbTlsConnectPort(context)
+            }
             val resolveMs = SystemClock.elapsedRealtime() - startedAt
             if (port != null) {
                 Metrics.record(context, MetricEvent.ENABLE_PORT_FOUND)

@@ -60,6 +60,10 @@ enable_at() {
   http_code="${response##*$'\n'}"
   body="${response%$'\n'*}"
 
+  # Whatever it says next, the app answered from here — so the next run should
+  # come straight back instead of sweeping every subnet to find it again.
+  case "$http_code" in 200|503) remember_ip "$ip" ;; esac
+
   # The phone bounds its own handler and says so rather than leaving us hanging,
   # so 503 is a diagnosis, not a transport failure.
   if [ "$http_code" = "503" ]; then

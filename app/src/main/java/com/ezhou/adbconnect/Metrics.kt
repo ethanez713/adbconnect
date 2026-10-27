@@ -23,6 +23,7 @@ enum class MetricEvent(val id: String, val label: String, val breaksDownEnable: 
     APP_OPEN("app.open", "App opens"),
     ENABLE_ALREADY_ON("enable.already_on", "already on, no-op", breaksDownEnable = true),
     ENABLE_FLIPPED("enable.flipped", "had to turn it on", breaksDownEnable = true),
+    ENABLE_RESTARTED("enable.restarted", "on but not listening, restarted", breaksDownEnable = true),
     ENABLE_PORT_FOUND("enable.port_found", "adbd port resolved", breaksDownEnable = true),
     ENABLE_PORT_TIMEOUT("enable.port_timeout", "port lookup timed out", breaksDownEnable = true),
     ENABLE_RESOLVE_FAILED("enable.resolve_failed", "NSD resolve failed", breaksDownEnable = true),

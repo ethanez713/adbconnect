@@ -29,9 +29,13 @@ object SecureSettingsWriter {
      * because the grant is expected to be absent until `tools/bootstrap.sh` (or the command shown
      * in the app) has been run once.
      */
-    fun enableWirelessDebugging(context: Context): Boolean =
+    fun enableWirelessDebugging(context: Context): Boolean = write(context, 1)
+
+    fun disableWirelessDebugging(context: Context): Boolean = write(context, 0)
+
+    private fun write(context: Context, value: Int): Boolean =
         try {
-            Settings.Global.putInt(context.contentResolver, SETTING, 1)
+            Settings.Global.putInt(context.contentResolver, SETTING, value)
         } catch (e: SecurityException) {
             false
         }

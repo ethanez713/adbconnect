@@ -20,7 +20,7 @@ grant is the entire reason the app exists, because it is what allows writing
 | | |
 |---|---|
 | `GET /status?token=…` | Is debugging on, which adb port, is the permission still granted |
-| `GET /enable?token=…` | Turn debugging on, report the resulting adb port |
+| `GET /enable?token=…` | Turn debugging on (off-then-on if it reads on but adbd isn't advertising), report the resulting adb port |
 | `POST /install?token=…` | Accept an APK, install it as a same-signed update to itself (below) |
 
 **`tools/aconnect`** — the command you actually run. A ladder: already-attached → saved
@@ -119,7 +119,7 @@ production builds, which cannot read other apps' data or touch the system partit
 
 Deliberate choices, not accidents:
 
-- **`/enable` is not a generic settings proxy.** The written key and value are hardcoded;
+- **`/enable` is not a generic settings proxy.** The written key and values are hardcoded;
   no request parameter influences either. A general "write any secure setting" endpoint is
   what would turn `WRITE_SECURE_SETTINGS` into a real escalation surface.
 - **`/install` only ever installs a same-signed update of the app itself.** Accepting a pushed
