@@ -48,6 +48,14 @@ sliding window (default 30 min, set in the app); every ping pushes the deadline 
 only, because that setting is a no-op on battery. The app owns the setting while the feature is
 on and clears it at expiry unless something else changed it first.
 
+**Allowed networks** (`NetworkGate.kt`) — Android 17 resumes wireless debugging on every Wi-Fi
+join while `adb_wifi_enabled` reads on, and on a network it has not approved that resume raises
+the consent prompt. So the app owns that setting per network: on an allowed SSID it is on, on any
+other Wi-Fi, or with no Wi-Fi, it is off. The list is edited in the app; the network it is first
+seen on is allowed automatically. Only the automatic turn-on is gated — `/enable`, and so
+`aconnect`, and the in-app button work on any network. Reading an SSID needs the location
+permissions `bootstrap.sh` grants, plus Location switched on.
+
 **`tools/bootstrap.sh`** — one-shot setup, run while adb is already connected. Installs the
 APK, grants the permission, exempts the app from battery optimisation, pulls the auth token
 off the device, and symlinks both tools into `~/.local/bin`.
@@ -93,7 +101,8 @@ the end, and cutting it short kills it before they run.
 The first time debugging is enabled on a **new Wi-Fi network**, Android shows *"Allow
 wireless debugging on this network?"* and the settings write does not return until someone
 taps it. That gesture is the dialog's entire purpose; no permission this app can hold will
-dismiss it. A new network costs one tap, always. What the app does instead is say so — it
+dismiss it. A new network costs one tap, always — including the first time a newly allowed
+network is joined. What the app does instead is say so — it
 answers `503` with `awaitingConsent: true` rather than going silent, and `adbwake` prints
 the tap it is waiting for.
 

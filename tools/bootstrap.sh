@@ -51,6 +51,15 @@ log "granting POST_NOTIFICATIONS (screen wake + pushed-update alerts)"
 adb -s "$SERIAL" shell pm grant "$APP_ID" android.permission.POST_NOTIFICATIONS || \
   err "could not grant POST_NOTIFICATIONS; the keep-awake ping will not wake the screen"
 
+# Android hides the Wi-Fi SSID from an app without location access, and the allowed-networks gate
+# reads it from the service with no activity showing, hence background. No prompt exists for
+# these over adb; the user still has to leave Location switched on.
+log "granting location (read the Wi-Fi name for the allowed-networks list)"
+for perm in ACCESS_COARSE_LOCATION ACCESS_FINE_LOCATION ACCESS_BACKGROUND_LOCATION; do
+  adb -s "$SERIAL" shell pm grant "$APP_ID" "android.permission.$perm" || \
+    err "could not grant $perm; auto-enable on allowed networks will be inactive"
+done
+
 # Doze would otherwise drop inbound packets to the listener once the phone has been
 # idle for a while -- the exact state the app exists to recover from. Doing it here
 # over adb means the user never has to find the toggle by hand.
