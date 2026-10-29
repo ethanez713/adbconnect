@@ -47,6 +47,9 @@ enum class MetricEvent(val id: String, val label: String, val breaksDownEnable: 
     AWAKE_WAKE_IGNORED("awake.wake_ignored", "screen stayed dark after wake", breaksDownEnable = true),
     AWAKE_USER_OVERRIDE("awake.user_override", "setting changed mid-window", breaksDownEnable = true),
 
+    NETWORK_AUTO_ENABLE("network.auto_enable", "Auto-enabled on allowed Wi-Fi"),
+    NETWORK_AUTO_DISABLE("network.auto_disable", "Turned off off-list or on Wi-Fi loss"),
+
     REQUEST_STALLED("request.stalled", "Requests that timed out"),
 }
 

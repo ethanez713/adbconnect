@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.ezhou.adbconnect.MetricEvent
 import com.ezhou.adbconnect.Metrics
+import com.ezhou.adbconnect.NetworkGate
 import com.ezhou.adbconnect.R
 import com.ezhou.adbconnect.SecureSettingsWriter
 import com.ezhou.adbconnect.StayAwake
@@ -90,6 +91,7 @@ class AdbControlService : Service() {
         startServer()
         KeepAliveJob.schedule(applicationContext)
         StayAwake.reconcile(applicationContext)
+        NetworkGate.register(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -97,6 +99,7 @@ class AdbControlService : Service() {
     override fun onDestroy() {
         running = false
         runCatching { serverSocket?.close() }
+        NetworkGate.unregister(applicationContext)
         super.onDestroy()
     }
 

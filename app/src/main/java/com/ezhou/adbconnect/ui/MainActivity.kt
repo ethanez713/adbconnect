@@ -1,11 +1,15 @@
 package com.ezhou.adbconnect.ui
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.app.PendingIntent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.net.Uri
 import android.os.Bundle
@@ -31,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -55,6 +60,7 @@ import com.ezhou.adbconnect.EventCount
 import com.ezhou.adbconnect.MetricEvent
 import com.ezhou.adbconnect.Metrics
 import com.ezhou.adbconnect.MetricsSnapshot
+import com.ezhou.adbconnect.NetworkGate
 import com.ezhou.adbconnect.StayAwake
 import com.ezhou.adbconnect.TokenStore
 import com.ezhou.adbconnect.clearStagedUpdateIfInstalled
@@ -155,6 +161,9 @@ private data class UiState(
     val awakeWindowMinutes: Int = 30,
     val awakeDeadlineMs: Long? = null,
     val wakePermissionGranted: Boolean = false,
+    val currentSsid: String? = null,
+    val allowedSsids: Set<String> = emptySet(),
+    val canReadSsid: Boolean = false,
 )
 
 @Composable
@@ -186,6 +195,9 @@ private fun AdbConnectScreen(onInstallUpdate: () -> Unit) {
                     awakeWindowMinutes = StayAwake.windowMinutes(context),
                     awakeDeadlineMs = StayAwake.deadlineMs(context),
                     wakePermissionGranted = StayAwake.isWakePermissionGranted(context),
+                    currentSsid = NetworkGate.currentSsid(context),
+                    allowedSsids = NetworkGate.allowedNetworks(context),
+                    canReadSsid = NetworkGate.canReadSsid(context),
                 )
                 delay(3000)
             }
@@ -234,6 +246,26 @@ private fun AdbConnectScreen(onInstallUpdate: () -> Unit) {
             onWindowChange = {
                 StayAwake.setWindowMinutes(context, it)
                 state = state.copy(awakeWindowMinutes = it)
+            },
+        )
+
+        AllowedNetworksSection(
+            currentSsid = state.currentSsid,
+            allowedSsids = state.allowedSsids,
+            canReadSsid = state.canReadSsid,
+            onAllow = { ssid ->
+                NetworkGate.allow(context, ssid)
+                NetworkGate.apply(context, onWifi = true, ssid = ssid)
+                state = state.copy(allowedSsids = NetworkGate.allowedNetworks(context))
+            },
+            onRemove = { ssid ->
+                NetworkGate.remove(context, ssid)
+                val liveSsid = NetworkGate.currentSsid(context)
+                NetworkGate.apply(context, onWifi = isOnWifi(context), ssid = liveSsid)
+                state = state.copy(
+                    currentSsid = liveSsid,
+                    allowedSsids = NetworkGate.allowedNetworks(context),
+                )
             },
         )
 
@@ -326,6 +358,49 @@ private fun KeepAwakeSection(
     }
 }
 
+@Composable
+private fun AllowedNetworksSection(
+    currentSsid: String?,
+    allowedSsids: Set<String>,
+    canReadSsid: Boolean,
+    onAllow: (String) -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Auto-enable on these Wi-Fi networks", style = MaterialTheme.typography.titleSmall)
+        StatusRow("Current network", currentSsid ?: "unknown")
+        if (!canReadSsid) {
+            val missingPermission = !hasLocationPermission(LocalContext.current)
+            Text(
+                if (missingPermission) {
+                    "Location permission missing — run bootstrap.sh"
+                } else {
+                    "Turn Location on to recognise networks"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        } else if (currentSsid != null && currentSsid !in allowedSsids) {
+            Button(onClick = { onAllow(currentSsid) }) {
+                Text("Allow this network")
+            }
+        }
+        allowedSsids.sorted().forEach { ssid ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    ssid,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { onRemove(ssid) }) { Text("Remove") }
+            }
+        }
+    }
+}
+
 private val dateFormatter: DateTimeFormatter = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
 private val countColumnWidth = 48.dp
 
@@ -412,6 +487,20 @@ private fun SelectableMono(text: String) {
                 .padding(12.dp),
         )
     }
+}
+
+private fun isOnWifi(context: Context): Boolean {
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+    return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+}
+
+private fun hasLocationPermission(context: Context): Boolean {
+    val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+    val background = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+    )
+    return fine == PackageManager.PERMISSION_GRANTED && background == PackageManager.PERMISSION_GRANTED
 }
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean =

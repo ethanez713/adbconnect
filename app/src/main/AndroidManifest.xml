@@ -8,6 +8,12 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- SSID reads are location-gated. Granted by bootstrap.sh over adb, never requested at
+         runtime; background because the callback runs in the service with no activity visible. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
     <!-- Doze drops inbound traffic to a non-exempt UID's sockets, which silently defeats the
          listener at exactly the moment it is needed: the phone has been idle for a while, wireless
          debugging has died, and the PC's /enable request is the only way back in. The foreground
