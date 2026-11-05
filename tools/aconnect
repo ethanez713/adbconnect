@@ -41,6 +41,12 @@
 #   aconnect status                       Show what is currently attached
 #   aconnect serial [name]                Print the one transport to pass to `adb -s`
 #   aconnect devices                      List registered phones and who may use them
+#   aconnect unlock [name]                Wake the phone and enter its lock-screen PIN
+#
+# PINs live outside the repo in `$ACONNECT_PINS` (default
+# ~/.secrets/canonical/adbconnect/pins, mode 0600), one `<name> <pin>` line per
+# phone. `unlock` never prints the PIN, so callers can use it without the PIN
+# ever reaching their own logs or transcripts.
 #
 # Several phones can be attached at once, so `~/.config/adbconnect-devices` ranks
 # them: one line per phone, `<name> <ro.serialno> [project ...]`. The first line
@@ -56,6 +62,7 @@ ADB="$HOME/Android/Sdk/platform-tools/adb"
 
 STATE="$HOME/.config/android-device"
 DEVICES="$HOME/.config/adbconnect-devices"
+PINS="${ACONNECT_PINS:-$HOME/.secrets/canonical/adbconnect/pins}"
 PIN_PORT=5555
 mkdir -p "$(dirname "$STATE")"
 
@@ -511,6 +518,29 @@ ping_awake() {
       </dev/null >/dev/null 2>&1 & )
 }
 
+keyguard_showing() {
+  "$ADB" -s "$1" shell dumpsys window </dev/null 2>/dev/null | grep -q 'isKeyguardShowing=true'
+}
+
+unlock_device() {
+  local name="${1:-$(default_name)}" ep pin w h
+  ep="$(serial_for "$name")" || return $?
+  pin="$(awk -v n="$name" '$1==n {print $2; exit}' "$PINS" 2>/dev/null)"
+  [ -n "$pin" ] || { err "no PIN for $name in $PINS"; return 1; }
+  "$ADB" -s "$ep" shell input keyevent KEYCODE_WAKEUP </dev/null
+  sleep 0.5
+  keyguard_showing "$ep" || { log "$name is already unlocked"; return 0; }
+  read -r w h < <("$ADB" -s "$ep" shell wm size </dev/null | awk -F'[ x]' '/size/ {print $(NF-1), $NF}' | tr -d '\r')
+  "$ADB" -s "$ep" shell input swipe $((w / 2)) $((h * 4 / 5)) $((w / 2)) $((h / 4)) 250 </dev/null
+  sleep 0.8
+  "$ADB" -s "$ep" shell input text "$pin" </dev/null
+  "$ADB" -s "$ep" shell input keyevent KEYCODE_ENTER </dev/null
+  sleep 1.5
+  # One submission only: repeated wrong PINs start the lock screen's lockout timer.
+  if keyguard_showing "$ep"; then err "$name is still locked; check its PIN in $PINS"; return 1; fi
+  log "$name unlocked"
+}
+
 devices_report() {
   local name serial allow t access
   printf '%-8s %-13s %-8s %-22s %s\n' NAME SERIAL ACCESS PROJECTS TRANSPORT
@@ -554,6 +584,12 @@ case "${1:-}" in
   devices)
     devices_report
     exit 0
+    ;;
+  unlock)
+    timeout 20 "$ADB" start-server >/dev/null 2>&1
+    dedupe
+    unlock_device "${2:-}"
+    exit $?
     ;;
   serial)
     # adb re-adds the mDNS twin at any point in a session, so the duplicate that

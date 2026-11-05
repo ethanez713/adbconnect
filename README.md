@@ -81,6 +81,11 @@ to anyone else (`aconnect serial <name>` exits 3). A phone with no projects is o
 rather than choosing a transport themselves; that is the only thing keeping a reserved phone
 clean. Only the default phone is remembered in `~/.config/android-device`.
 
+`aconnect unlock [name]` wakes a PIN-locked phone and enters its PIN from `$ACONNECT_PINS`
+(default `~/.secrets/canonical/adbconnect/pins`, mode 0600, `<name> <pin>` per line), so the PIN
+never appears in a caller's command line or output. It submits once and reports locked or
+unlocked, because repeated wrong PINs start the lock screen's lockout timer.
+
 ## Setup
 
 ```bash
