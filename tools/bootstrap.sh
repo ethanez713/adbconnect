@@ -26,7 +26,7 @@ ln -sfn "$PWD/tools/aconnect" "$HOME/.local/bin/aconnect"
 ln -sfn "$PWD/tools/adbwake" "$HOME/.local/bin/adbwake"
 ln -sfn "$PWD/tools/adbpush" "$HOME/.local/bin/adbpush"
 
-command -v adb >/dev/null || { err "adb not on PATH -- source ~/android-tooling/env.sh first"; exit 1; }
+command -v adb >/dev/null || { err "adb not on PATH -- add the SDK's platform-tools first"; exit 1; }
 
 # An emulator is frequently attached alongside the phone on this box; an
 # untargeted adb command against more than one device/emulator just errors out,

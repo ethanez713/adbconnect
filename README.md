@@ -1,172 +1,67 @@
 # adbconnect
 
-Wireless ADB that reattaches itself, on a phone that keeps switching it off.
+[![CI](https://github.com/ethanez713/adbconnect/actions/workflows/ci.yml/badge.svg)](https://github.com/ethanez713/adbconnect/actions/workflows/ci.yml)
 
-Android randomises the wireless-debugging port every session and disables the feature
-entirely on reboot and on Wi-Fi change. The usual recovery is mDNS discovery, which fails
-in exactly that case: a phone with debugging off advertises nothing. So the recovery path
-has to start from something on the phone that is *always* listening on an address the PC
-can predict — which is what this repo is.
+**Wireless ADB that reconnects by itself.** Android switches wireless debugging off on
+every reboot and Wi-Fi change, and moves it to a new port each session, so a phone you
+were connected to yesterday is gone today. `aconnect` gets it back with one command and
+no trip to Developer options.
 
-## Parts
+## How it works
 
-**The app** (`app/`) — a foreground service holding a hand-rolled HTTP listener on a fixed
-port, `47821`. Foreground so Android will not kill the process; battery-optimisation exempt
-so Doze does not drop inbound packets to it. It holds `WRITE_SECURE_SETTINGS`, which apps
-cannot request at runtime and can only be granted over a working adb connection — that
-grant is the entire reason the app exists, because it is what allows writing
-`Settings.Global.adb_wifi_enabled`. Three token-authenticated endpoints:
+The usual recovery is mDNS discovery, which fails in exactly the case that matters: a
+phone with debugging off advertises nothing. So recovery starts from something on the
+phone that is always listening at an address the PC can predict.
 
-| | |
-|---|---|
-| `GET /status?token=…` | Is debugging on, which adb port, is the permission still granted |
-| `GET /enable?token=…` | Turn debugging on (off-then-on if it reads on but adbd isn't advertising), report the resulting adb port |
-| `POST /install?token=…` | Accept an APK, install it as a same-signed update to itself (below) |
+- **A small Android app** holds `WRITE_SECURE_SETTINGS` and listens on one fixed LAN port.
+  Asked with its token, it turns wireless debugging back on and reports the new port.
+- **`aconnect`** is the command you run. It tries the cheap things first (an existing
+  connection, saved endpoints, mDNS), then asks the app, then scans for a rotated port,
+  and keeps retrying for a minute because a sleeping phone only answers now and then.
+- **`aconnect serial`** prints the one device to pass to `adb -s`, so scripts never pick
+  the wrong phone when several are attached.
 
-**`tools/aconnect`** — the command you actually run. A ladder: already-attached → saved
-endpoints → mDNS → `adbwake` → a rotated-port scan of any remembered IP still reachable,
-retried for 60s because a sleeping phone drops inbound packets while its radio surfaces only
-periodically. The scan is the "known IP, rotated port" recovery for when mDNS is dark (its
-usual state under WSL) and debugging is still on, so `adbwake` finds nothing to re-enable; it
-needs `python3`. `aconnect serial` prints the one transport to pass to `adb -s`.
-
-**`tools/adbwake`** — the rung that talks to the app. Locates the phone (every remembered IP
-first, then a sweep of both this PC's subnet and every `/24` the phone has been seen on, for
-port 47821), calls `/enable`, prints `ip:port`. Sweeping the phone's historical subnets, not
-just the PC's, is what recovers a network that hands the phone and PC addresses on different
-`/24`s but still routes between them — a mesh or a main+guest split.
-
-**`tools/adbpush`** — the update channel for when adb itself cannot be revived. It finds the
-app's listener the same way `adbwake` does (shared `tools/lib/locate.sh`), then `POST`s an APK to
-`/install`. The phone ends up one tap from the new build — a notification, or an in-app button —
-without ever needing a working adb connection. It cannot install silently; see below.
-
-**Keep-awake window** (`StayAwake.kt`) — a screen that sleeps mid-session locks the keyguard and
-idles Wi-Fi, which is when adb stops answering. `aconnect serial` and a successful `aconnect`
-ping the app, which lights a dark screen and holds Developer options' *Stay awake* on for a
-sliding window (default 30 min, set in the app); every ping pushes the deadline out. Charging
-only, because that setting is a no-op on battery. The app owns the setting while the feature is
-on and clears it at expiry unless something else changed it first.
-
-**Allowed networks** (`NetworkGate.kt`) — Android 17 resumes wireless debugging on every Wi-Fi
-join while `adb_wifi_enabled` reads on, and on a network it has not approved that resume raises
-the consent prompt. So the app owns that setting per network: on an allowed SSID it is on, on any
-other Wi-Fi, or with no Wi-Fi, it is off. The list is edited in the app; the network it is first
-seen on is allowed automatically. Only the automatic turn-on is gated — `/enable`, and so
-`aconnect`, and the in-app button work on any network. Reading an SSID needs the location
-permissions `bootstrap.sh` grants, plus Location switched on.
-
-**`tools/bootstrap.sh`** — one-shot setup, run while adb is already connected. Installs the
-APK, grants the permission, exempts the app from battery optimisation, pulls the auth token
-off the device, and symlinks both tools into `~/.local/bin`.
-
-## State
-
-| File | Holds |
-|---|---|
-| `~/.config/android-device` | Recent endpoints, most-recent-first |
-| `~/.config/adbconnect` | Phone IP — a hint only; `adbwake` rewrites it |
-| `~/.config/adbconnect-token` | Auth token, `0600` |
-| `~/.cache/aconnect/awake-*` | Per-transport stamp that throttles the keep-awake ping to one a minute |
-| `~/.config/adbconnect-devices` | Phone registry: `<name> <ro.serialno> [project ...]`, first line is the default |
-
-## Several phones
-
-The registry ranks the phones attached to this PC. The first line is the default: the attach
-ladder only counts a connection to it as success, and a bare `aconnect serial` returns it. A
-phone with projects after its serial is reserved for those projects — a project is the repo's
-directory name, or `$ACONNECT_PROJECT` — and `aconnect serial` never returns a reserved phone
-to anyone else (`aconnect serial <name>` exits 3). A phone with no projects is open to all.
-`aconnect devices` shows who may use what. Callers pass `"$(aconnect serial)"` to `adb -s`
-rather than choosing a transport themselves; that is the only thing keeping a reserved phone
-clean. Only the default phone is remembered in `~/.config/android-device`.
-
-`aconnect unlock [name]` wakes a PIN-locked phone and enters its PIN from `$ACONNECT_PINS`
-(default `~/.secrets/canonical/adbconnect/pins`, mode 0600, `<name> <pin>` per line), so the PIN
-never appears in a caller's command line or output. It submits once and reports locked or
-unlocked, because repeated wrong PINs start the lock screen's lockout timer.
+It also keeps the screen awake during a session, limits automatic re-enabling to Wi-Fi
+networks you allow, and can push an updated build of itself when adb cannot be revived.
 
 ## Setup
 
+JDK 17 and the Android SDK on a Linux or WSL host, with the phone connected over adb once
+(USB or a paired wireless session):
+
 ```bash
-source ~/android-tooling/env.sh     # JDK 17 + Gradle + SDK adb (v37) on PATH
 ./gradlew assembleDebug
-tools/bootstrap.sh                  # while adb is connected
+tools/bootstrap.sh        # installs the app, grants the permission, links the tools
 ```
 
-One manual step, because no adb command sets it: Battery → Background usage limits → **Never
-sleeping apps** → add ADB Connection Service. A deep-sleeping app receives no jobs or alarms, so
-`KeepAliveJob` cannot revive it.
+One step no adb command can do: Battery → Background usage limits → **Never sleeping
+apps** → add ADB Connection Service. After that:
 
-Thereafter, `aconnect`. Allow it up to 90s — the rungs that fix things are the slow ones at
-the end, and cutting it short kills it before they run.
+```bash
+aconnect                              # allow up to 90 s; the rungs that fix things are the slow ones
+adb -s "$(aconnect serial)" shell     # always target the serial it prints
+```
 
-## The one thing it cannot do
+## What it cannot do
 
-The first time debugging is enabled on a **new Wi-Fi network**, Android shows *"Allow
-wireless debugging on this network?"* and the settings write does not return until someone
-taps it. That gesture is the dialog's entire purpose; no permission this app can hold will
-dismiss it. A new network costs one tap, always — including the first time a newly allowed
-network is joined. What the app does instead is say so — it
-answers `503` with `awaitingConsent: true` rather than going silent, and `adbwake` prints
-the tap it is waiting for.
-
-The other thing no LAN trick can fix is a network that puts the phone and PC on subnets that
-genuinely do not route to each other — a guest/AP-isolated Wi-Fi, or the phone on cellular
-while the PC is on Wi-Fi. Knowing the phone's IP does not help: the problem is reachability,
-not discovery, and nothing on the phone is reachable inbound. The sweep tries every `/24` the
-phone has lived on, so a *routable* split (mesh, main+guest) recovers unattended; a
-*non-routable* one needs the two put on one subnet — the phone's hotspot, USB, or a Tailscale
-tailnet — and `aconnect` now says so instead of claiming the phone's address is unknown.
+- **Tap the consent prompt.** The first time debugging is enabled on a new Wi-Fi network,
+  Android asks on the phone's screen. The tools say they are waiting for that tap rather
+  than going silent.
+- **Cross networks that do not route.** A guest network with client isolation, or the
+  phone on cellular, needs the two on one subnet: a hotspot, USB or a tailnet.
 
 ## Security
 
-The listener is one TCP port on the LAN with three endpoints, all requiring a 128-bit
-`SecureRandom` token generated on the device and readable only by the app.
+The listener answers only to a 128-bit token generated on the phone. Turning debugging on
+does not authorise anyone to use it: an adb peer still has to be paired. The endpoint
+writes one hardcoded setting, and the self-update path accepts only a build signed with
+the app's own key and still needs a tap. The token travels over plain HTTP, which is a
+deliberate trade for a home LAN. The full reasoning is in
+[docs/SECURITY.md](docs/SECURITY.md).
 
-The reason the blast radius is small is that **enabling wireless debugging is not the same
-as authorising anyone to use it**. An adb peer still has to pair first — a separate port and
-a six-digit code shown on the phone's screen — so a stolen token buys an attacker the
-ability to turn on a setting you can see and switch off, plus the device model and port
-number. It does not buy a connection. And adb access is not root: `adbd` runs as `shell` on
-production builds, which cannot read other apps' data or touch the system partition.
+How the pieces fit, the files they keep and multi-phone setups are in
+[docs/DETAILS.md](docs/DETAILS.md).
 
-Deliberate choices, not accidents:
+## License
 
-- **`/enable` is not a generic settings proxy.** The written key and values are hardcoded;
-  no request parameter influences either. A general "write any secure setting" endpoint is
-  what would turn `WRITE_SECURE_SETTINGS` into a real escalation surface.
-- **`/install` only ever installs a same-signed update of the app itself.** Accepting a pushed
-  executable is the one endpoint that could be a real escalation surface, and two things fence
-  it. First, signer pinning: the app installs the APK only if its signing certificate matches
-  the app's own — Android's installer enforces this for any update, and the app re-checks it
-  before the bytes reach the installer, so a token-holder cannot push arbitrary malware without
-  the signing key, only a genuine rebuild of *this* app. Second, the app **cannot install
-  silently** — it holds `REQUEST_INSTALL_PACKAGES`, not the system-only install permission, so
-  the system's install-confirm screen and the user's tap are unavoidable. The feature removes
-  the "sideload it by hand from Downloads" step, not the confirmation. The upload is size-capped
-  and streamed to disk, and like every other path cannot crash the listener.
-- **`AwakeReceiver` is exported but gated on `DUMP`**, which `shell` holds and no third-party app
-  can, so only adb can ping it. Like `/enable`, it writes one hardcoded setting.
-- **The service is `exported="false"`** — unreachable through Android IPC. The socket is the
-  only way in. `BootReceiver` is exported because it must be, and `BOOT_COMPLETED` is a
-  protected broadcast only the system can send.
-- **`allowBackup="false"`**, so the token cannot be lifted out with `adb backup`.
-- **No request can crash the listener.** It is the only thing reachable when the phone is
-  otherwise unreachable, so an uncaught throw on a connection thread — which on Android kills
-  the whole process — must never be possible. See `400ab2b`.
-
-Known and accepted, on a home LAN:
-
-- **Plain HTTP, token in the query string.** Anyone able to sniff or MITM your LAN can read
-  it. Given that the token alone cannot produce a connection, encrypting it is not worth the
-  key management on a personal network.
-- **The socket binds all interfaces**, so the port is exposed on any network the phone joins,
-  including hostile ones. Worth revisiting if this phone spends time on public Wi-Fi; binding
-  to the Wi-Fi interface or refusing off-subnet callers would close it.
-- **The token never rotates.** Clearing app data is the only way to change it.
-
-## Incidents
-
-`docs/incidents/` holds post-mortems for failures worth not repeating. They record what the
-evidence actually showed, which is usually more useful than the fix.
+[MIT](LICENSE). Copyright (c) 2026 Ethan Zhou.
